@@ -1,0 +1,5 @@
+{
+  "version": "@PROJECT_VERSION@",
+  "source_revision": "@LUMINA_SVG_SOURCE_REVISION@",
+  "source_dirty": @LUMINA_SVG_SOURCE_DIRTY@
+}

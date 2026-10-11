@@ -106,14 +106,14 @@ def test_clipper_offset_range_rejects_double_two_to_the_63_boundary() -> None:
     assert "extension >= 0x1p63" in safety
 
 
-def test_python_distribution_is_exactly_versioned_for_cpython_312() -> None:
+def test_python_distribution_covers_supported_cpython_versions() -> None:
     metadata = tomllib.loads(
         (PACKAGE_ROOT / "pyproject.toml").read_text(encoding="utf-8")
     )
 
     assert metadata["project"]["name"] == "lumina-svg-core"
-    assert metadata["project"]["version"] == "0.3.0"
-    assert metadata["project"]["requires-python"] == "==3.12.*"
+    assert metadata["project"]["version"] == "0.3.1"
+    assert metadata["project"]["requires-python"] == ">=3.12,<3.15"
     assert metadata["project"]["license"] == "AGPL-3.0-only"
     license_text = (PACKAGE_ROOT / "LICENSE").read_text(encoding="utf-8")
     assert "GNU AFFERO GENERAL PUBLIC LICENSE" in license_text
@@ -140,7 +140,7 @@ def test_release_workflow_pins_actions_to_immutable_commits() -> None:
 
     for pinned_action in (
         "actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803",
-        "pypa/cibuildwheel@1828c10ab37f080699c7b81cea34097c684a7074",
+        "pypa/cibuildwheel@adba99c781d3746d38b3a09b1cf797965bcb7fe6",
         "actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02",
     ):
         assert pinned_action in workflow

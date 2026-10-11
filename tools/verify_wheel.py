@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import argparse
+from email.parser import Parser
+import json
 from pathlib import Path
 import tempfile
 import zipfile
@@ -11,6 +13,12 @@ import zipfile
 def verify_wheel(path: Path) -> None:
     with zipfile.ZipFile(path) as archive:
         names = set(archive.namelist())
+        assert "lumina_svg_core/_build_info.json" in names
+        identity = json.loads(archive.read("lumina_svg_core/_build_info.json"))
+        metadata_name = next(name for name in names if name.endswith(".dist-info/METADATA"))
+        metadata = Parser().parsestr(archive.read(metadata_name).decode("utf-8"))
+        assert identity["version"] == metadata["Version"]
+        assert metadata["License-Expression"] == "AGPL-3.0-only"
     assert any(name.endswith((".pyd", ".so")) for name in names)
     assert any(
         Path(name).name.startswith("_lumina_svg_compensation")
@@ -53,6 +61,8 @@ def verify_installed_extension() -> None:
     import lumina_svg_core
     from shapely.geometry import Polygon
 
+    assert hasattr(lumina_svg_core, "__source_revision__")
+    assert hasattr(lumina_svg_core, "__source_dirty__")
     assert callable(getattr(lumina_svg_core, "canonicalize_grid_regions", None))
     triangle = [(0, 0), (1, 0), (0, 1000), (0, 0)]
     canonical = lumina_svg_core.canonicalize_grid_regions([[triangle]])

@@ -1,0 +1,14 @@
+name: Prepare distributions
+
+# Produce reviewable files and receipts without publishing.
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  prepare:
+    uses: ./.github/workflows/wheels.yml
+    with:
+      retention-days: 90

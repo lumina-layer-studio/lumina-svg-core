@@ -1,13 +1,21 @@
 cmake_minimum_required(VERSION 3.20)
 
-if(CMAKE_HOST_APPLE)
+if(CMAKE_HOST_APPLE AND NOT DEFINED ENV{MACOSX_DEPLOYMENT_TARGET})
   set(
     CMAKE_OSX_DEPLOYMENT_TARGET "12.0"
-    CACHE STRING "Minimum supported macOS version" FORCE
+    CACHE STRING "Minimum supported macOS version"
   )
 endif()
 
-project(lumina_svg_core VERSION 0.3.0 LANGUAGES C CXX)
+project(lumina_svg_core VERSION 0.3.1 LANGUAGES C CXX)
+
+include(cmake/BuildProvenance.cmake)
+lumina_resolve_build_provenance("${CMAKE_CURRENT_SOURCE_DIR}")
+configure_file(cmake/build_info.json.in _build_info.json @ONLY)
+install(
+  FILES "${CMAKE_CURRENT_BINARY_DIR}/_build_info.json"
+  DESTINATION . COMPONENT lumina_svg_core
+)
 
 include(CTest)
 

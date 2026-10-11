@@ -1,7 +1,7 @@
 # lumina-svg-core
 
 [![Build wheels](https://github.com/lumina-layer-studio/lumina-svg-core/actions/workflows/wheels.yml/badge.svg?branch=dev-refactor)](https://github.com/lumina-layer-studio/lumina-svg-core/actions/workflows/wheels.yml)
-[![Python 3.12](https://img.shields.io/badge/python-3.12-blue.svg)](https://www.python.org/downloads/)
+[![Python 3.12–3.14](https://img.shields.io/badge/python-3.12%E2%80%933.14-blue.svg)](https://www.python.org/downloads/)
 [![License: AGPL v3](https://img.shields.io/badge/license-AGPL--3.0--only-blue.svg)](LICENSE)
 
 [English](README.md) | [简体中文](README.zh-CN.md)
@@ -16,8 +16,8 @@ the geometry engine, Python bindings, test fixtures, and build tools. It has no
 runtime dependency on Lumina Studio, its UI, printer settings, or application
 services. It does not generate meshes or 3MF files.
 
-**Status:** version 0.3.0, alpha. Python support is currently limited to CPython
-3.12. The geometry result contract is schema version 4.
+**Status:** version 0.3.1, alpha. CPython 3.12, 3.13 and 3.14 are supported.
+The geometry result contract is schema version 4.
 
 ## Installation
 
@@ -25,21 +25,22 @@ services. It does not generate meshes or 3MF files.
 
 Download a wheel for your operating system and architecture from
 [GitHub Releases](https://github.com/lumina-layer-studio/lumina-svg-core/releases),
-then install the downloaded file in a Python 3.12 environment:
+then install the downloaded file in a matching Python 3.12–3.14 environment:
 
 ```bash
-python -m pip install /path/to/lumina_svg_core-0.3.0-cp312-cp312-platform.whl
+python -m pip install /path/to/lumina_svg_core-0.3.1-cp314-cp314-platform.whl
 ```
 
 Replace the example filename with the actual downloaded wheel. Wheels are built
 for Windows x86-64, macOS Apple Silicon, macOS Intel, and Linux x86-64. macOS
-requires version 12 or newer. Linux wheels use the Ubuntu 24.04 system ABI;
-compatibility with older glibc distributions is not guaranteed. The package is
-not currently published on PyPI.
+requires version 12 or newer for Python 3.12/3.13, and version 14 or newer for
+Python 3.14. Linux wheels use `manylinux_2_28` and require glibc 2.28 or newer;
+Alpine/musl, Windows ARM and free-threaded Python are not covered. The package
+is not currently published on PyPI. Match the wheel's OS, CPU and Python tags.
 
 ### Build from source
 
-You need CPython 3.12, Git, and a C++17 compiler: MSVC on Windows, Apple Clang on
+You need CPython 3.12–3.14, Git, and a C++17 compiler: MSVC on Windows, Apple Clang on
 macOS, or GCC/Clang on Linux. The build installs its pinned Python build tools
 and fetches pinned LunaSVG and Clipper2 source revisions, so network access is
 required for a fresh build.
@@ -90,6 +91,12 @@ To read a file, use
 `lumina_svg_core.analyze_svg("drawing.svg", target_width_mm=40.0, tolerance_mm=0.02)`.
 Paths may also be `pathlib.Path` instances. Both analysis entry points accept
 `allow_strokes=False` to omit stroke paints while retaining fills.
+
+Inspect the installed build with `lumina_svg_core.__version__`,
+`lumina_svg_core.__source_revision__` and `lumina_svg_core.__source_dirty__`.
+Git-free source builds report unknown provenance unless the builder supplies
+it explicitly. [Distribution preparation](docs/DISTRIBUTIONS.md) describes
+the build identity and checked file receipts.
 
 See the [API reference](docs/api.md) for ring traversal, result statuses, source
 identity, coordinate units, and the lower-level recording and grid APIs.
@@ -145,10 +152,11 @@ python -m build
 python tools/verify_wheel.py dist/<actual-wheel-filename>.whl --contents-only
 ```
 
-CI builds and installs wheels on all four supported platform targets, runs the
-complete Python suite, checks binary/license contents, and exercises installed
-extensions. Linux also builds a wheel from the source distribution and runs the
-native canonical-boundary regression. See [CONTRIBUTING.md](CONTRIBUTING.md) for
+CI builds and installs wheels for all three Python versions on all four platform
+targets, runs the complete Python suite, checks binary/license contents, and
+exercises installed extensions. A separate Linux job builds a wheel from the
+source distribution and runs the native canonical-boundary regression.
+See [CONTRIBUTING.md](CONTRIBUTING.md) for
 the development workflow and [benchmarks/README.md](benchmarks/README.md) for
 reproducible measurements.
 
