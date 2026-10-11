@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.3.1 — Python and distribution alignment
+
+- Support CPython 3.12, 3.13 and 3.14 on all four existing platform targets.
+- Build Linux wheels against the manylinux_2_28 / glibc 2.28 baseline.
+- Expose installed version, source revision and dirty status from build metadata.
+- Prepare checked wheels/source archives with `distribution.json` source/hash
+  receipts and a manual workflow that retains review artifacts for 90 days.
+- Preserve AGPL-3.0-only licensing and the geometry schema/API. Python 3.14
+  macOS wheels target 14+; existing 3.12/3.13 targets retain macOS 12+.
+
 ## 0.3.0 — Initial standalone release
 
 - Publish the SVG geometry engine as an independent repository under

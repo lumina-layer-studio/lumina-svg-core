@@ -1,7 +1,12 @@
 # Python API reference
 
-This reference describes `lumina-svg-core` 0.3.0 and result schema 4. The package
-requires CPython 3.12 and NumPy 2.x.
+This reference describes `lumina-svg-core` 0.3.1 and result schema 4. The package
+requires CPython 3.12–3.14 and NumPy 2.x.
+
+`__version__`, `__source_revision__` and `__source_dirty__` identify the installed
+build. Source revision is a full Git SHA or `"unknown"`; dirty status is a
+boolean or `None` when unavailable. This is declared build provenance, separate
+from geometry result/source identities. See [distribution receipts](DISTRIBUTIONS.md).
 
 ## Analyze an SVG
 

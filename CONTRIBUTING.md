@@ -16,7 +16,7 @@ them. Small fixes and documentation corrections may be submitted directly.
 
 ## Local setup
 
-Use CPython 3.12, Git, and a C++17 compiler. Create a virtual environment as
+Use CPython 3.12–3.14, Git, and a C++17 compiler. Create a virtual environment as
 shown in the [README](README.md), then run:
 
 ```bash
@@ -55,7 +55,10 @@ python tools/verify_wheel.py dist/<actual-wheel-filename>.whl --contents-only
 
 The Linux CI job also runs the C++ canonical-boundary regression via CMake and
 CTest. The wheel matrix validates installation and the complete Python suite
-on Windows x86-64, Linux x86-64, macOS arm64, and macOS x86-64.
+on Windows x86-64, Linux x86-64, macOS arm64, and macOS x86-64, for Python
+3.12, 3.13 and 3.14. [Distribution preparation](docs/DISTRIBUTIONS.md) records
+the reviewed source identity and hashes; release preparation requires a clean
+checkout and wheels from that exact source.
 
 ## Pull requests
 

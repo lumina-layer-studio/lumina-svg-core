@@ -1,7 +1,7 @@
 # lumina-svg-core
 
 [![Build wheels](https://github.com/lumina-layer-studio/lumina-svg-core/actions/workflows/wheels.yml/badge.svg?branch=dev-refactor)](https://github.com/lumina-layer-studio/lumina-svg-core/actions/workflows/wheels.yml)
-[![Python 3.12](https://img.shields.io/badge/python-3.12-blue.svg)](https://www.python.org/downloads/)
+[![Python 3.12–3.14](https://img.shields.io/badge/python-3.12%E2%80%933.14-blue.svg)](https://www.python.org/downloads/)
 [![License: AGPL v3](https://img.shields.io/badge/license-AGPL--3.0--only-blue.svg)](LICENSE)
 
 [English](README.md) | [简体中文](README.zh-CN.md)
@@ -10,23 +10,23 @@
 
 本项目最初用于 Lumina Studio，现作为独立仓库维护。运行时不依赖主程序、界面、打印机设置或应用服务。它负责二维几何分析，不生成网格或 3MF 文件。
 
-**当前状态：** 0.3.0，Alpha 阶段；仅支持 CPython 3.12；几何结果协议版本为 4。
+**当前状态：** 0.3.1，Alpha 阶段；支持 CPython 3.12、3.13 和 3.14；几何结果协议版本为 4。
 
 ## 安装
 
 ### 预编译安装包
 
-在 [GitHub Releases](https://github.com/lumina-layer-studio/lumina-svg-core/releases) 下载与你的系统、架构匹配的 wheel 文件，在 Python 3.12 环境中安装：
+在 [GitHub Releases](https://github.com/lumina-layer-studio/lumina-svg-core/releases) 下载与你的系统、架构和 Python 3.12～3.14 版本匹配的 wheel 文件：
 
 ```bash
-python -m pip install /path/to/lumina_svg_core-0.3.0-cp312-cp312-platform.whl
+python -m pip install /path/to/lumina_svg_core-0.3.1-cp314-cp314-platform.whl
 ```
 
-请将示例文件名替换为实际下载的文件。构建目标包括 Windows x86-64、Apple Silicon Mac、Intel Mac 和 Linux x86-64。macOS 要求 12 或更新版本；Linux 安装包使用 Ubuntu 24.04 的系统 ABI，不保证兼容更早的 glibc 系统。本项目目前没有发布到 PyPI。
+请将示例文件名替换为实际下载的文件。构建目标包括 Windows x86-64、Apple Silicon Mac、Intel Mac 和 Linux x86-64。Python 3.12/3.13 的 Mac 安装包要求 macOS 12+，Python 3.14 要求 macOS 14+。Linux 使用 manylinux_2_28 基线，要求 glibc 2.28+；不覆盖 Alpine/musl、Windows ARM 或自由线程 Python。本项目目前没有发布到 PyPI。
 
 ### 从源码构建
 
-需要 CPython 3.12、Git 和支持 C++17 的编译器：Windows 使用 MSVC，macOS 使用 Apple Clang，Linux 使用 GCC 或 Clang。首次构建需要联网下载固定版本的构建工具和 C++ 依赖。
+需要 CPython 3.12～3.14、Git 和支持 C++17 的编译器：Windows 使用 MSVC，macOS 使用 Apple Clang，Linux 使用 GCC 或 Clang。首次构建需要联网下载固定版本的构建工具和 C++ 依赖。
 
 ```bash
 git clone https://github.com/lumina-layer-studio/lumina-svg-core.git
@@ -72,6 +72,8 @@ coordinates_mm = (
 
 [API 文档](docs/api.md) 说明了坐标单位、结果状态、多边形遍历、颜色来源及底层接口。
 
+使用 `lumina_svg_core.__version__`、`lumina_svg_core.__source_revision__` 和 `lumina_svg_core.__source_dirty__` 可以查看安装包版本、源码提交和构建时是否有未提交改动。无 Git 信息且未明确声明来源的源码构建会记录为未知。构建来源与文件校验清单见 [发行文件准备](docs/DISTRIBUTIONS.md)。
+
 ## 支持范围
 
 | 能力 | 范围 |
@@ -96,7 +98,7 @@ python -m build
 python tools/verify_wheel.py dist/<actual-wheel-filename>.whl --contents-only
 ```
 
-CI 会在四个平台构建、安装并验证 wheel，运行完整 Python 测试和二进制/许可证检查。Linux 还会验证从源码包构建，以及原生几何边界回归测试。
+CI 会为三种 Python 分别构建四个平台的 wheel，运行完整 Python 测试和二进制/许可证检查；另外验证从源码包构建，以及原生几何边界回归测试。
 
 贡献流程见 [CONTRIBUTING.md](CONTRIBUTING.md)，性能测量方法见 [benchmarks/README.md](benchmarks/README.md)。性能结果与输入、编译器、CPU 和线程数有关，参考机器的测量值不代表通用延迟保证。
 
