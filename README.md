@@ -23,9 +23,20 @@ The geometry result contract is schema version 4.
 
 ### Prebuilt wheels
 
-Download a wheel for your operating system and architecture from
-[GitHub Releases](https://github.com/lumina-layer-studio/lumina-svg-core/releases),
-then install the downloaded file in a matching Python 3.12–3.14 environment:
+In a supported Python 3.12–3.14 environment, let pip select the matching public
+wheel automatically:
+
+```bash
+python -m pip install --only-binary=lumina-svg-core --find-links https://github.com/lumina-layer-studio/lumina-svg-core/releases/expanded_assets/v0.3.1 "lumina-svg-core==0.3.1"
+```
+
+No C++ compiler, third-party checkout, manual patch, or local wheelhouse is
+needed. The command selects the published 0.3.1 release, not an unmerged branch.
+LunaSVG/PlutoVG and Clipper2 are compiled into the extension by maintainers.
+
+Alternatively, download a matching wheel from
+[GitHub Releases](https://github.com/lumina-layer-studio/lumina-svg-core/releases)
+and install the downloaded file:
 
 ```bash
 python -m pip install /path/to/lumina_svg_core-0.3.1-cp314-cp314-platform.whl
@@ -38,12 +49,15 @@ Python 3.14. Linux wheels use `manylinux_2_28` and require glibc 2.28 or newer;
 Alpine/musl, Windows ARM and free-threaded Python are not covered. The package
 is not currently published on PyPI. Match the wheel's OS, CPU and Python tags.
 
-### Build from source
+### Build the native library from source (contributors)
 
 You need CPython 3.12–3.14, Git, and a C++17 compiler: MSVC on Windows, Apple Clang on
 macOS, or GCC/Clang on Linux. The build installs its pinned Python build tools
 and fetches pinned LunaSVG and Clipper2 source revisions, so network access is
 required for a fresh build.
+
+This is the library contributor workflow, not a prerequisite for running
+Lumina Studio from its Python/TypeScript source.
 
 ```bash
 git clone https://github.com/lumina-layer-studio/lumina-svg-core.git
