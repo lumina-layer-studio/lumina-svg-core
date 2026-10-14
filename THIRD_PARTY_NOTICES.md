@@ -15,6 +15,11 @@ binary distributions under `THIRD_PARTY_LICENSES/`.
 The Lumina fork applies only the versioned paint-command recorder patch stored
 at `patches/lunasvg-paint-recorder.patch`.
 
+Project-owned recorder modules in `src/recorder/` retain parsing compatibility
+algorithms adapted from LunaSVG's `svgparserutils.h` and `svgproperty.cpp` under
+the same MIT notice. They use source text, scalar layout values, and public
+paint-command buffers; they do not include LunaSVG or PlutoVG private headers.
+
 ## PlutoVG
 
 - Source: the PlutoVG 1.3.2 tree bundled by the pinned LunaSVG revision

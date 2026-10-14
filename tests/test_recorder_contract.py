@@ -2309,6 +2309,28 @@ def test_recorder_supports_font_relative_lengths(
     assert len(result.commands) == 1
 
 
+def test_recorder_preserves_inherited_mixed_unit_stroke_decimals() -> None:
+    result = lumina_svg_core.record_paint_commands_svg(
+        "<svg viewBox='0 0 100 100'><g fill='none' stroke='red' "
+        "stroke-width='0.123456789cm' stroke-dasharray='0.100000001in,0.200000003pt' "
+        "stroke-dashoffset='-0.345678912mm'>"
+        "<path d='M10 50H90'/></g></svg>"
+    )
+
+    assert result.status == "supported"
+    assert len(result.commands) == 1
+    stroke = result.commands[0].stroke
+    assert stroke.width == pytest.approx(
+        0.123456789 * (96.0 / 2.54), abs=1e-12, rel=0
+    )
+    assert stroke.dash_array == pytest.approx(
+        [0.100000001 * 96.0, 0.200000003 * (96.0 / 72.0)], abs=1e-12, rel=0
+    )
+    assert stroke.dash_offset == pytest.approx(
+        -0.345678912 * (96.0 / 25.4), abs=1e-12, rel=0
+    )
+
+
 @pytest.mark.parametrize(
     ("attribute", "value", "reason"),
     [
