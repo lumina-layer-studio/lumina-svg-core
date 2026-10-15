@@ -179,16 +179,13 @@ tool = pathlib.Path(sys.argv[1])
 output_parent = pathlib.Path(sys.argv[2]).resolve()
 sys.argv = [str(tool), *sys.argv[3:]]
 sys.path.insert(0, str(tool.parent))
-copied_wheels = 0
 
 def fail_release_copy(event, arguments):
-    global copied_wheels
-    if event == "shutil.copyfile":
+    # Windows copy2 can bypass copyfile auditing via its native fast path.
+    if event == "shutil.copytree":
         destination = pathlib.Path(arguments[1]).resolve()
-        if destination.is_relative_to(output_parent) and destination.suffix == ".whl":
-            copied_wheels += 1
-            if copied_wheels == 2:
-                raise OSError("injected release-copy I/O failure")
+        if destination.is_relative_to(output_parent) and destination.name == "packages":
+            raise OSError("injected release-copy I/O failure")
 
 sys.addaudithook(fail_release_copy)
 runpy.run_path(str(tool), run_name="__main__")
