@@ -21,6 +21,7 @@
 #include <clipper2/clipper.h>
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <cstdint>
 #include <limits>
@@ -141,8 +142,86 @@ inline Product Add(const Product& left, const Product& right) {
 }
 
 inline long double Value(const Product& value) {
-  return static_cast<long double>(value.high) * 18446744073709551616.0L
-      + static_cast<long double>(value.low);
+  const bool negative = value.high < 0;
+  auto high = static_cast<uint64_t>(value.high);
+  auto low = value.low;
+  if (negative) {
+    low = ~low + 1;
+    high = ~high + static_cast<uint64_t>(low == 0);
+  }
+  const long double magnitude =
+      static_cast<long double>(high) * 18446744073709551616.0L
+      + static_cast<long double>(low);
+  return negative ? -magnitude : magnitude;
+}
+
+// A path has fewer than 2^64 fan terms, each a signed 128-bit cross product.
+// Every partial sum therefore fits signed 192 bits. All limb arithmetic is
+// unsigned, including sign extension and carry, so it needs no __int128 or
+// signed overflow. Conversion happens only after exact cancellation.
+struct AreaSum {
+  static_assert(sizeof(std::size_t) <= sizeof(uint64_t));
+  std::array<uint64_t, 3> limbs{};
+
+  void Add(const Product& term) {
+    const std::array<uint64_t, 3> extended{
+        term.low, static_cast<uint64_t>(term.high),
+        term.high < 0 ? std::numeric_limits<uint64_t>::max() : uint64_t{0}};
+    uint64_t carry = 0;
+    for (std::size_t index = 0; index < limbs.size(); ++index) {
+      const auto sum = limbs[index] + extended[index];
+      const auto carried = sum + carry;
+      carry = static_cast<uint64_t>(sum < limbs[index])
+          + static_cast<uint64_t>(carried < sum);
+      limbs[index] = carried;
+    }
+  }
+
+  int Sign() const {
+    if ((limbs.back() >> 63) != 0) return -1;
+    return limbs[0] != 0 || limbs[1] != 0 || limbs[2] != 0 ? 1 : 0;
+  }
+
+  AreaSum Magnitude() const {
+    if (Sign() >= 0) return *this;
+    AreaSum magnitude;
+    uint64_t carry = 1;
+    for (std::size_t index = 0; index < limbs.size(); ++index) {
+      magnitude.limbs[index] = ~limbs[index] + carry;
+      carry = static_cast<uint64_t>(magnitude.limbs[index] < carry);
+    }
+    return magnitude;
+  }
+};
+
+inline int CompareLimbs(const AreaSum& left, const AreaSum& right) {
+  for (std::size_t index = left.limbs.size(); index-- > 0;) {
+    if (left.limbs[index] != right.limbs[index]) {
+      return left.limbs[index] < right.limbs[index] ? -1 : 1;
+    }
+  }
+  return 0;
+}
+
+inline int Compare(const AreaSum& left, const AreaSum& right) {
+  const bool left_negative = left.Sign() < 0;
+  const bool right_negative = right.Sign() < 0;
+  if (left_negative != right_negative) return left_negative ? -1 : 1;
+  return CompareLimbs(left, right);
+}
+
+inline int CompareMagnitude(const AreaSum& left, const AreaSum& right) {
+  return CompareLimbs(left.Magnitude(), right.Magnitude());
+}
+
+inline long double Value(const AreaSum& area) {
+  const auto magnitude = area.Magnitude();
+  long double value = 0;
+  for (std::size_t index = magnitude.limbs.size(); index-- > 0;) {
+    value = value * 18446744073709551616.0L
+        + static_cast<long double>(magnitude.limbs[index]);
+  }
+  return area.Sign() < 0 ? -value : value;
 }
 
 }  // namespace wide
@@ -197,14 +276,57 @@ struct IntersectionMath<int64_t> {
   static long double Value(Wide value) { return wide::Value(value); }
 };
 
+// Preserve the continuous compensation domain's arithmetic while retaining
+// exact signed sums for every integer-grid area decision.
+template <typename Coord>
+struct AreaMath {
+  using Wide = long double;
+
+  static Wide Area(const PathOf<Coord>& path) {
+    if (path.size() < 3) return 0;
+    long double area = 0;
+    for (std::size_t index = 1; index + 1 < path.size(); ++index) {
+      area += Cross<Coord>(path[index] - path[0], path[index + 1] - path[0]);
+    }
+    return area * 0.5L;
+  }
+
+  static int Sign(Wide area) { return area > 0 ? 1 : (area < 0 ? -1 : 0); }
+  static int Compare(Wide left, Wide right) {
+    return left < right ? -1 : (right < left ? 1 : 0);
+  }
+  static int CompareMagnitude(Wide left, Wide right) {
+    return Compare(std::abs(left), std::abs(right));
+  }
+  static long double Value(Wide area) { return area; }
+};
+
+template <>
+struct AreaMath<int64_t> {
+  using Wide = wide::AreaSum;
+
+  static Wide Area(const PathOf<int64_t>& path) {
+    Wide area;
+    for (std::size_t index = 1; index + 1 < path.size(); ++index) {
+      area.Add(IntersectionMath<int64_t>::Cross(
+          path[index] - path[0], path[index + 1] - path[0]));
+    }
+    return area;
+  }
+
+  static int Sign(const Wide& area) { return area.Sign(); }
+  static int Compare(const Wide& left, const Wide& right) {
+    return wide::Compare(left, right);
+  }
+  static int CompareMagnitude(const Wide& left, const Wide& right) {
+    return wide::CompareMagnitude(left, right);
+  }
+  static long double Value(const Wide& area) { return wide::Value(area) * 0.5L; }
+};
+
 template <typename Coord>
 inline long double SignedArea(const PathOf<Coord>& path) {
-  if (path.size() < 3) return 0;
-  long double area = 0;
-  for (std::size_t index = 1; index + 1 < path.size(); ++index) {
-    area += Cross<Coord>(path[index] - path[0], path[index + 1] - path[0]);
-  }
-  return area * 0.5L;
+  return AreaMath<Coord>::Value(AreaMath<Coord>::Area(path));
 }
 
 // Every vertex on one line: exactly zero area, whatever the area arithmetic
@@ -236,7 +358,7 @@ template <typename Coord>
 struct SimpleRing {
   PathOf<Coord> path;
   BoundsOf<Coord> bounds;
-  long double signed_area;
+  typename AreaMath<Coord>::Wide signed_area;
 };
 
 // Split one noded path into simple cycles: a path that visits a vertex twice
@@ -258,8 +380,8 @@ inline void SplitTouchingRing(const PathOf<Coord>& path,
     }
     const auto start = found->second;
     PathOf<Coord> cycle(trace.begin() + start, trace.end());
-    const long double area = SignedArea<Coord>(cycle);
-    if (area != 0 && !HasZeroArea<Coord>(cycle)) {
+    const auto area = AreaMath<Coord>::Area(cycle);
+    if (AreaMath<Coord>::Sign(area) != 0 && !HasZeroArea<Coord>(cycle)) {
       const auto bounds = clipper::GetBounds(cycle);
       rings.push_back({std::move(cycle), bounds, area});
     }
@@ -693,6 +815,7 @@ struct CanonicalNode {
 template <typename Coord>
 inline void BuildRingTree(std::vector<SimpleRing<Coord>> rings,
                           CanonicalNode<Coord>& output) {
+  using Math = AreaMath<Coord>;
   std::vector<BoundsOf<Coord>> bounds;
   bounds.reserve(rings.size());
   for (const auto& ring : rings) bounds.push_back(ring.bounds);
@@ -707,14 +830,14 @@ inline void BuildRingTree(std::vector<SimpleRing<Coord>> rings,
   for (std::size_t child = 0; child < rings.size(); ++child) {
     const auto& ring = rings[child];
     auto parent = BoundsIndex<Coord>::kMissing;
-    long double parent_area = std::numeric_limits<long double>::infinity();
     index.Query(ring.bounds, true, [&](std::size_t candidate) {
       const auto& enclosing = rings[candidate];
-      const long double area = std::abs(enclosing.signed_area);
-      if (area > std::abs(ring.signed_area) && area < parent_area
+      if (Math::CompareMagnitude(enclosing.signed_area, ring.signed_area) > 0
+          && (parent == BoundsIndex<Coord>::kMissing
+              || Math::CompareMagnitude(enclosing.signed_area,
+                                        rings[parent].signed_area) < 0)
           && RingContains<Coord>(enclosing.path, ring.path)) {
         parent = candidate;
-        parent_area = area;
       }
     });
     if (parent == BoundsIndex<Coord>::kMissing) {
@@ -727,12 +850,13 @@ inline void BuildRingTree(std::vector<SimpleRing<Coord>> rings,
     auto [ring_index, parent, parent_winding] = to_attach.back();
     to_attach.pop_back();
     auto& ring = rings[ring_index];
-    const int winding = parent_winding + (ring.signed_area > 0 ? 1 : -1);
+    const int area_sign = Math::Sign(ring.signed_area);
+    const int winding = parent_winding + area_sign;
     // A cycle wholly inside already-painted coverage is retained by that
     // coverage, not emitted as an overlapping duplicate polygon.
     if ((parent_winding == 0) != (winding == 0)) {
       const bool is_hole = winding == 0;
-      if ((ring.signed_area > 0) == is_hole) {
+      if ((area_sign > 0) == is_hole) {
         std::reverse(ring.path.begin(), ring.path.end());
       }
       auto node = std::make_unique<CanonicalNode<Coord>>();
@@ -807,17 +931,6 @@ inline std::vector<PathOf<Coord>> PolyTreePaths(const clipper::PolyTree64& tree)
 }
 
 template <typename Coord>
-inline long double Dot(const PointOf<Coord>& a, const PointOf<Coord>& b) {
-  return static_cast<long double>(a.x) * static_cast<long double>(b.x)
-      + static_cast<long double>(a.y) * static_cast<long double>(b.y);
-}
-
-template <typename Coord>
-inline long double SquaredLength(const PointOf<Coord>& value) {
-  return Dot<Coord>(value, value);
-}
-
-template <typename Coord>
 inline bool AngleBefore(const PointOf<Coord>& a, const PointOf<Coord>& b) {
   using Math = IntersectionMath<Coord>;
   const bool first_half = a.y > 0 || (a.y == 0 && a.x >= 0);
@@ -852,6 +965,8 @@ template <typename Coord>
 inline std::vector<EdgeKey<Coord>> PositiveFaceEdges(
     const std::vector<PointOf<Coord>>& nodes,
     const std::unordered_map<EdgeKey<Coord>, int, EdgeHash<Coord>>& weights) {
+  using Area = AreaMath<Coord>;
+  using Math = IntersectionMath<Coord>;
   std::vector<EdgeKey<Coord>> halves;
   std::vector<int> winding_deltas;
   std::vector<std::vector<std::size_t>> outgoing(nodes.size());
@@ -900,8 +1015,7 @@ inline std::vector<EdgeKey<Coord>> PositiveFaceEdges(
   std::vector<std::vector<std::size_t>> faces;
   std::vector<std::size_t> face_of(halves.size(), BoundsIndex<Coord>::kMissing);
   std::vector<std::size_t> outer_faces(seeds.size(), BoundsIndex<Coord>::kMissing);
-  std::vector<long double> outer_areas(
-      seeds.size(), std::numeric_limits<long double>::infinity());
+  std::vector<typename Area::Wide> outer_areas(seeds.size());
   for (std::size_t first = 0; first < halves.size(); ++first) {
     if (face_of[first] != BoundsIndex<Coord>::kMissing) continue;
     const auto face = faces.size();
@@ -915,8 +1029,9 @@ inline std::vector<EdgeKey<Coord>> PositiveFaceEdges(
       edge = next[edge];
     } while (edge != first);
     const auto component = components[halves[first].a];
-    const auto area = SignedArea<Coord>(path);
-    if (area < outer_areas[component]) {
+    const auto area = Area::Area(path);
+    if (outer_faces[component] == BoundsIndex<Coord>::kMissing
+        || Area::Compare(area, outer_areas[component]) < 0) {
       outer_areas[component] = area;
       outer_faces[component] = face;
     }
@@ -944,10 +1059,10 @@ inline std::vector<EdgeKey<Coord>> PositiveFaceEdges(
           if (components[halves[edge].a] == component) return;
           const auto& a = nodes[halves[edge].a];
           const auto& b = nodes[halves[edge].b];
-          const auto cross = Cross<Coord>(b - a, point - a);
-          if (a.y <= point.y && b.y > point.y && cross > 0) {
+          const int cross_sign = Math::Sign(Math::Cross(b - a, point - a));
+          if (a.y <= point.y && b.y > point.y && cross_sign > 0) {
             baseline += winding_deltas[edge];
-          } else if (a.y > point.y && b.y <= point.y && cross < 0) {
+          } else if (a.y > point.y && b.y <= point.y && cross_sign < 0) {
             baseline -= winding_deltas[edge];
           }
         });
@@ -1004,23 +1119,31 @@ inline std::vector<SimpleRing<Coord>> TraceFilledFaces(
   for (std::size_t index = 0; index < edges.size(); ++index) {
     outgoing[edges[index].a].push_back(index);
   }
-  std::vector<std::size_t> next(edges.size());
-  const long double full_turn = 2 * std::acos(-1.0L);
+  for (std::size_t node = 0; node < outgoing.size(); ++node) {
+    auto& candidates = outgoing[node];
+    std::sort(candidates.begin(), candidates.end(),
+              [&](std::size_t a, std::size_t b) {
+                return AngleBefore<Coord>(
+                    nodes[edges[a].b] - nodes[node],
+                    nodes[edges[b].b] - nodes[node]);
+              });
+  }
+  std::vector<std::size_t> next(edges.size(), BoundsIndex<Coord>::kMissing);
   for (std::size_t index = 0; index < edges.size(); ++index) {
     const auto& edge = edges[index];
     const auto reverse = nodes[edge.a] - nodes[edge.b];
-    long double best = std::numeric_limits<long double>::infinity();
-    next[index] = BoundsIndex<Coord>::kMissing;
-    for (const auto candidate : outgoing[edge.b]) {
-      const auto direction = nodes[edges[candidate].b] - nodes[edge.b];
-      const auto angle = std::atan2(
-          Cross<Coord>(reverse, direction), Dot<Coord>(reverse, direction));
-      const auto clockwise = angle <= 0 ? -angle : full_turn - angle;
-      if (clockwise < best) {
-        next[index] = candidate;
-        best = clockwise;
-      }
-    }
+    const auto& candidates = outgoing[edge.b];
+    if (candidates.empty()) continue;
+    // The outgoing order is counter-clockwise. The predecessor of the
+    // incoming reverse keeps filled coverage on the left, including wraparound.
+    auto successor = std::lower_bound(
+        candidates.begin(), candidates.end(), reverse,
+        [&](std::size_t candidate, const PointOf<Coord>& direction) {
+          return AngleBefore<Coord>(
+              nodes[edges[candidate].b] - nodes[edge.b], direction);
+        });
+    if (successor == candidates.begin()) successor = candidates.end();
+    next[index] = *--successor;
   }
   std::vector<SimpleRing<Coord>> rings;
   std::vector<bool> visited(edges.size(), false);
