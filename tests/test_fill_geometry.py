@@ -651,17 +651,36 @@ def test_canonical_noding_displacement_is_charged_once_to_physical_error() -> No
     assert (result.max_flattening_error_mm
             + result.max_quantization_error_mm) <= 0.6 * 0.02
     assert result.unprintable_fragments.count == 0
+    # At this deliberately coarse one-source-unit grid, owned-cell routing
+    # contracts subgrid bridges into shared vertices. The source NonZero fill
+    # has two components and no holes. The blank triangle remains empty but
+    # becomes exterior space, rather than a ring owned as a hole.
     for name in ("raw", "visible", "silhouette"):
         collection = getattr(result, name)
-        assert collection.component_count == 1
-        assert collection.hole_count == 1
+        assert collection.component_count == 3
+        assert collection.hole_count == 0
         areas = []
+        blank_winding = 0
+        blank_on_boundary = False
+        probe_x, probe_y = 11, 8
         for start, end in zip(collection.ring_offsets[:-1],
                               collection.ring_offsets[1:]):
             points = collection.coordinates[int(start):int(end)].tolist()
             areas.append(sum(a[0] * b[1] - a[1] * b[0]
                              for a, b in zip(points, points[1:])))
-        assert areas == [100, -10]
+            for a, b in zip(points, points[1:]):
+                cross = ((b[0] - a[0]) * (probe_y - a[1])
+                         - (b[1] - a[1]) * (probe_x - a[0]))
+                blank_on_boundary |= (
+                    cross == 0
+                    and min(a[0], b[0]) <= probe_x <= max(a[0], b[0])
+                    and min(a[1], b[1]) <= probe_y <= max(a[1], b[1]))
+                if a[1] <= probe_y < b[1] and cross > 0:
+                    blank_winding += 1
+                elif b[1] <= probe_y < a[1] and cross < 0:
+                    blank_winding -= 1
+        assert sorted(areas) == [4, 8, 72]
+        assert blank_winding == 0 and not blank_on_boundary
 
 
 @pytest.mark.parametrize(

@@ -7,6 +7,7 @@
 #include <cstdint>
 #include <iostream>
 #include <limits>
+#include <random>
 #include <string>
 
 namespace {
@@ -205,23 +206,56 @@ long double DistanceToLinework(const Point& point, const Path& path) {
   return nearest;
 }
 
+bool RequireBoundedOriginalLineworkNoding(int64_t height) {
+  const Path original{Point{int64_t{0}, int64_t{1}}, Point{int64_t{3}, height},
+                      Point{int64_t{0}, int64_t{0}},
+                      Point{int64_t{5}, height * 4 / 5}};
+  NodingStats stats;
+  const auto noded = NodeToGrid<int64_t>({original}, nullptr, &stats);
+  if (!Require(noded.size() == 1, "bounded-routing-ring-ownership")) return false;
+  // Four original segments and five rounded contact/endpoint centers give
+  // this arrangement a finite bound independent of the coordinate span.
+  if (noded[0].size() > 20) {
+    std::cerr << "FAIL original-linework-arrangement-bound: "
+              << noded[0].size() << " vertices, expected at most 20\n";
+    return false;
+  }
+  for (const auto& point : original) {
+    if (!Require(std::find(noded[0].begin(), noded[0].end(), point)
+                     != noded[0].end(), "bounded-routing-keeps-original-vertices")) {
+      return false;
+    }
+  }
+  BoundaryNoder<int64_t> fresh(noded);
+  const auto checked = fresh.Run();
+  bool ok = Require(fresh.AlreadyNoded(), "bounded-routing-is-fully-noded");
+  ok &= Require(checked == noded, "bounded-routing-fresh-audit-is-unchanged");
+  ok &= Require(NodeToGrid<int64_t>(noded) == noded,
+                "bounded-routing-is-idempotent");
+  ok &= Require(stats.DisplacementBound() <= 1,
+                "bounded-routing-original-grid-error");
+  for (const auto& point : noded[0]) {
+    ok &= Require(DistanceToLinework(point, original) <= stats.DisplacementBound(),
+                  "bounded-routing-vertices-stay-by-original-linework");
+  }
+  return ok;
+}
+
 bool RequireCumulativeDisplacementBound() {
   const Path original{{8, 2}, {11, 17}, {8, 1}, {13, 14}};
   NodingStats stats;
   const auto noded = NodeToGrid<int64_t>({original}, nullptr, &stats);
   bool ok = Require(noded.size() == 1, "displaced-ring-ownership");
   if (noded.size() != 1) return false;
-  const Point displaced{8, 9};
-  const auto distance = DistanceToLinework(displaced, original);
-  ok &= Require(std::find(noded[0].begin(), noded[0].end(), displaced)
-                    != noded[0].end(), "multi-pass-displaced-vertex-retained");
-  ok &= Require(std::abs(distance - 21.0L / std::sqrt(234.0L)) < 1e-12L
-                    && distance > std::sqrt(0.5L),
-                "multi-pass-drift-exceeds-initial-grid-rounding");
+  ok &= Require(stats.DisplacementBound() <= 1,
+                "routing-has-one-original-linework-bound");
   for (const auto& point : noded[0]) {
     ok &= Require(DistanceToLinework(point, original) <= stats.DisplacementBound(),
-                  "cumulative-bound-covers-settled-linework");
+                  "original-bound-covers-every-routed-vertex");
   }
+  BoundaryNoder<int64_t> fresh(noded);
+  ok &= Require(fresh.Run() == noded && fresh.AlreadyNoded(),
+                "original-bound-linework-is-fully-noded");
   NodingStats settled_stats;
   ok &= Require(NodeToGrid<int64_t>(noded, nullptr, &settled_stats) == noded
                     && settled_stats.DisplacementBound() == 0,
@@ -265,9 +299,280 @@ bool RequireCumulativeDisplacementBound() {
   return ok;
 }
 
+Path LeastRotation(const Path& path) {
+  Path least = path;
+  Path rotated = path;
+  const auto before = [](const Point& a, const Point& b) {
+    return a.x < b.x || (a.x == b.x && a.y < b.y);
+  };
+  for (std::size_t start = 1; start < path.size(); ++start) {
+    std::rotate(rotated.begin(), rotated.begin() + 1, rotated.end());
+    if (std::lexicographical_compare(rotated.begin(), rotated.end(),
+                                     least.begin(), least.end(), before)) {
+      least = rotated;
+    }
+  }
+  return least;
+}
+
+bool RequireCellOwnership() {
+  struct Example {
+    Point start;
+    Point end;
+    Point center;
+    bool meets;
+    const char* label;
+  };
+  constexpr int64_t large = (int64_t{1} << 52) - 2;
+  const std::vector<Example> examples{
+      {{0, 1}, {1, 0}, {1, 1}, true, "positive-half-corner-is-owned"},
+      {{0, 1}, {1, 0}, {0, 0}, false, "zero-positive-half-corner-is-open"},
+      {{0, -1}, {-1, 0}, {-1, -1}, true, "negative-half-corner-is-owned"},
+      {{0, -1}, {-1, 0}, {0, 0}, false, "zero-negative-half-corner-is-open"},
+      {{0, -1}, {1, 0}, {1, -1}, true, "mixed-half-corner-is-owned"},
+      {{0, -1}, {1, 0}, {0, 0}, false, "mixed-zero-corner-is-open"},
+      {{1, 2}, {2, 1}, {1, 1}, false, "positive-upper-half-corner-is-open"},
+      {{-1, -2}, {-2, -1}, {-1, -1}, false,
+       "negative-lower-half-corner-is-open"},
+      {{0, -5}, {0, 5}, {0, 2}, true, "vertical-axis-visits-zero-column"},
+      {{0, -5}, {0, 5}, {1, 2}, false, "vertical-axis-misses-neighbor-column"},
+      {{-5, 0}, {5, 0}, {-2, 0}, true, "horizontal-axis-visits-zero-row"},
+      {{-5, 0}, {5, 0}, {-2, -1}, false,
+       "horizontal-axis-misses-neighbor-row"},
+      {{0, 0}, {0, 0}, {0, 0}, true, "closed-segment-endpoint-is-owned"},
+      {{0, 0}, {0, 0}, {0, 1}, false, "point-misses-other-cell"},
+      {Point{large - 1, large}, Point{large, large - 1}, Point{large, large},
+       true, "large-positive-half-cell"},
+      {Point{-large + 1, -large}, Point{-large, -large + 1},
+       Point{-large, -large}, true, "large-negative-half-cell"},
+      {Point{-large, large + 1}, Point{large + 1, -large}, {1, 1},
+       true, "wide-fraction-owned-corner"},
+      {Point{-large, large + 1}, Point{large + 1, -large}, {0, 0},
+       false, "wide-fraction-open-corner"},
+  };
+  bool ok = true;
+  for (const auto& example : examples) {
+    ok &= Require(GridRoundingCellMeetsSegment(
+                      example.start, example.end, example.center) == example.meets,
+                  example.label);
+    ok &= Require(GridRoundingCellMeetsSegment(
+                      example.end, example.start, example.center) == example.meets,
+                  "cell-ownership-is-reversal-invariant");
+  }
+  return ok;
+}
+
+bool RequireRoutingContract(const std::vector<Path>& original,
+                            const std::vector<Path>& noded,
+                            const NodingStats& stats) {
+  if (!Require(noded.size() == original.size(), "routing-retains-ring-ownership")) {
+    return false;
+  }
+  BoundaryNoder<int64_t> fresh(noded);
+  bool ok = Require(fresh.Run() == noded && fresh.AlreadyNoded(),
+                    "routing-output-is-fully-noded");
+  ok &= Require(NodeToGrid<int64_t>(noded) == noded,
+                "routing-output-is-idempotent");
+  ok &= Require(stats.DisplacementBound() <= 1, "routing-bound-never-accumulates");
+  for (std::size_t ring = 0; ring < original.size(); ++ring) {
+    const bool has_segment = !original[ring].empty() && std::any_of(
+        original[ring].begin(), original[ring].end(),
+        [&](const Point& point) { return point != original[ring].front(); });
+    if (has_segment) {
+      for (const auto& point : original[ring]) {
+        ok &= Require(std::find(noded[ring].begin(), noded[ring].end(), point)
+                          != noded[ring].end(),
+                      "routing-keeps-every-original-nonzero-edge-vertex");
+      }
+    }
+    for (const auto& point : noded[ring]) {
+      if (stats.DisplacementBound() != 0) {
+        ok &= Require(DistanceToLinework(point, original[ring])
+                          <= stats.DisplacementBound(),
+                      "routing-bound-is-measured-from-original-ring");
+      } else {
+        bool on_original = false;
+        for (std::size_t edge = 0; edge < original[ring].size(); ++edge) {
+          const auto& a = original[ring][edge];
+          const auto& b = original[ring][(edge + 1) % original[ring].size()];
+          on_original |= Domain<int64_t>::CrossIsZero(b - a, point - a)
+              && point.x >= std::min(a.x, b.x) && point.x <= std::max(a.x, b.x)
+              && point.y >= std::min(a.y, b.y) && point.y <= std::max(a.y, b.y);
+        }
+        ok &= Require(on_original, "zero-routing-bound-means-exact-linework");
+      }
+    }
+  }
+  return ok;
+}
+
+bool RequireRoutingSymmetries(const std::vector<Path>& original) {
+  NodingStats stats;
+  const auto expected = NodeToGrid<int64_t>(original, nullptr, &stats);
+  if (!RequireRoutingContract(original, expected, stats)) return false;
+  // Reverse and rotate each ring independently, and reverse ring order. Every
+  // transformed output must still describe the same directed cyclic linework.
+  for (std::size_t changed = 0; changed < original.size(); ++changed) {
+    auto variant = original;
+    auto& path = variant[changed];
+    std::reverse(path.begin(), path.end());
+    if (!path.empty()) std::rotate(path.begin(), path.begin() + path.size() / 2,
+                                   path.end());
+    std::reverse(variant.begin(), variant.end());
+    const auto actual = NodeToGrid<int64_t>(variant, nullptr, &stats);
+    if (!RequireRoutingContract(variant, actual, stats)) return false;
+    for (std::size_t ring = 0; ring < original.size(); ++ring) {
+      auto transformed = actual[original.size() - 1 - ring];
+      if (ring == changed) std::reverse(transformed.begin(), transformed.end());
+      if (!Require(LeastRotation(transformed) == LeastRotation(expected[ring]),
+                   "routing-reversal-start-and-permutation-invariance")) {
+        return false;
+      }
+    }
+  }
+  return true;
+}
+
+bool RequireAllSmallArrangementOrderings(const std::vector<Path>& originals) {
+  const auto expected = NodeToGrid<int64_t>(originals);
+  for (std::size_t ring = 0; ring < originals.size(); ++ring) {
+    for (std::size_t start = 0; start < originals[ring].size(); ++start) {
+      for (const bool reverse : {false, true}) {
+        auto variant = originals;
+        auto& path = variant[ring];
+        std::rotate(path.begin(), path.begin() + start, path.end());
+        if (reverse) std::reverse(path.begin(), path.end());
+        auto actual = NodeToGrid<int64_t>(variant);
+        if (reverse) std::reverse(actual[ring].begin(), actual[ring].end());
+        for (std::size_t other = 0; other < originals.size(); ++other) {
+          if (!Require(LeastRotation(actual[other]) == LeastRotation(expected[other]),
+                       "every-start-and-orientation-preserves-routing")) return false;
+        }
+      }
+    }
+  }
+  std::vector<std::size_t> order(originals.size());
+  std::iota(order.begin(), order.end(), 0);
+  do {
+    std::vector<Path> variant;
+    for (const auto ring : order) variant.push_back(originals[ring]);
+    const auto actual = NodeToGrid<int64_t>(variant);
+    for (std::size_t ring = 0; ring < originals.size(); ++ring) {
+      if (!Require(LeastRotation(actual[ring]) == LeastRotation(expected[order[ring]]),
+                   "every-ring-permutation-preserves-routing")) return false;
+    }
+  } while (std::next_permutation(order.begin(), order.end()));
+  return true;
+}
+
+bool RequireLocalOriginalContactSets() {
+  const Path a{{0, 0}, {1, 0}, {1, -1}, {0, -1}};
+  const Path b{{-1, 0}, {999, 1}, {-1, 2}};
+  const Path remote{{10000, 10001}, {10003, 10200}, {10000, 10000},
+                    {10005, 10160}};
+  const std::vector<Path> paths{a, b, remote};
+  NodingStats stats;
+  const auto noded = NodeToGrid<int64_t>(paths, nullptr, &stats);
+  bool ok = RequireRoutingContract(paths, noded, stats);
+  ok &= Require(noded[0] == a && noded[1] == b,
+                "disjoint-subgrid-gap-is-not-attracted-by-remote-routing");
+  ok &= Require(SignedArea<int64_t>(noded[0]) == -1
+                    && SignedArea<int64_t>(noded[1]) == 1000,
+                "disjoint-subgrid-gap-keeps-exact-coverage");
+
+  const Path shell{{0, 0}, {100, 0}, {100, 100}, {0, 100}};
+  const Path hole{{20, 20}, {20, 80}, {80, 80}, {80, 20}};
+  const Path independent{{200, 0}, {240, 0}, {240, 40}, {200, 40}};
+  const std::vector<Path> nested{shell, hole, independent, remote};
+  const auto routed_nested = NodeToGrid<int64_t>(nested);
+  ok &= Require(routed_nested[0] == shell && routed_nested[1] == hole
+                    && routed_nested[2] == independent,
+                "containment-does-not-form-a-computational-contact-set");
+  CanonicalNode<int64_t> tree;
+  BuildFacesFromNoded<int64_t>(routed_nested, tree);
+  bool found_shell = false;
+  bool found_independent = false;
+  for (const auto& child : tree.children) {
+    if (SignedArea<int64_t>(child->path) == 10000) {
+      found_shell = !child->is_hole && child->children.size() == 1
+          && child->children[0]->is_hole
+          && SignedArea<int64_t>(child->children[0]->path) == -3600;
+    }
+    if (SignedArea<int64_t>(child->path) == 1600) {
+      found_independent = !child->is_hole && child->children.empty();
+    }
+  }
+  ok &= Require(found_shell && found_independent,
+                "coarse-shell-hole-and-independent-shell-keep-exact-areas");
+  ok &= RequireRoutingSymmetries(paths);
+  ok &= RequireAllSmallArrangementOrderings(paths);
+  return ok;
+}
+
+bool RequireActualContactFeedbackJoin() {
+  const std::vector<Path> originals{
+      {{0, 1}, {3, 20}, {0, 0}, {5, 16}},
+      {{1, 8}, {0, 8}, {0, 9}},
+  };
+  NodingContactSets sets(originals.size());
+  BoundaryNoder<int64_t> first_audit(originals, &sets);
+  const auto original_cuts = first_audit.Run();
+  bool ok = Require(sets.Find(0) != sets.Find(1),
+                    "feedback-original-linework-is-exactly-disjoint");
+  auto first_routes = original_cuts;
+  RouteDirtyOriginalGridSets(originals, original_cuts, sets, first_routes);
+  // The routed (0,2)->(3,20) segment meets the independent triangle's existing
+  // endpoint (1,8). This actual contact, not cell proximity, joins the sets.
+  ok &= Require(std::find(first_routes[0].begin(), first_routes[0].end(),
+                          Point{1, 8}) == first_routes[0].end(),
+                "feedback-first-route-has-not-already-added-contact");
+  const auto initial_joins = sets.Joins();
+  BoundaryNoder<int64_t> contact_audit(first_routes, &sets);
+  contact_audit.Run();
+  ok &= Require(!contact_audit.AlreadyNoded()
+                    && sets.Joins() == initial_joins + 1
+                    && sets.Find(0) == sets.Find(1),
+                "feedback-joins-only-on-actual-routed-contact");
+  NodingStats stats;
+  const auto result = NodeToGrid<int64_t>(originals, nullptr, &stats);
+  ok &= RequireRoutingContract(originals, result, stats);
+  ok &= Require(std::find(result[0].begin(), result[0].end(), Point{1, 8})
+                    != result[0].end(),
+                "feedback-rebuild-nodes-the-new-contact");
+  ok &= RequireRoutingSymmetries(originals);
+  ok &= RequireAllSmallArrangementOrderings(originals);
+  return ok;
+}
+
+bool RequireRecordedSeedRoutingFuzz() {
+  constexpr uint64_t seed = 0x4c554d494e415352ULL;
+  std::mt19937_64 random(seed);
+  for (std::size_t sample = 0; sample < 5000; ++sample) {
+    std::vector<Path> paths(1 + random() % 4);
+    for (auto& path : paths) {
+      const auto size = 3 + random() % 4;
+      for (std::size_t vertex = 0; vertex < size; ++vertex) {
+        const auto x = static_cast<int64_t>(random() % 25) - 12;
+        const auto y = static_cast<int64_t>(random() % 25) - 12;
+        path.emplace_back(x, y);
+      }
+    }
+    try {
+      if (RequireRoutingSymmetries(paths)) continue;
+    } catch (const std::exception& error) {
+      std::cerr << "routing-fuzz exception=" << error.what() << '\n';
+    }
+    std::cerr << "routing-fuzz seed=" << seed << " sample=" << sample << '\n';
+    return false;
+  }
+  return true;
+}
+
 }  // namespace
 
 int main() {
+  if (!RequireBoundedOriginalLineworkNoding(200)) return 1;
+  if (!RequireBoundedOriginalLineworkNoding(200'000'000'000LL)) return 1;
   constexpr int64_t n = 1'000'000'000'000LL;
   const Point a{n, n + 1};
   const Point b{n - 1, n};
@@ -288,6 +593,13 @@ int main() {
   ok &= RequireSettledIntegerNoding();
   ok &= RequireExactRationalRounding();
   ok &= RequireCumulativeDisplacementBound();
+  ok &= RequireCellOwnership();
+  ok &= RequireLocalOriginalContactSets();
+  ok &= RequireActualContactFeedbackJoin();
+  ok &= RequireRoutingSymmetries({Path{{0, 1}, {3, 200}, {0, 0}, {5, 160}}});
+  ok &= RequireAllSmallArrangementOrderings(
+      {Path{{0, 1}, {3, 200}, {0, 0}, {5, 160}}});
+  ok &= RequireRecordedSeedRoutingFuzz();
   ok &= Require(AngleBefore<int64_t>(a, b), "angle-before");
   ok &= Require(!AngleBefore<int64_t>(b, a), "angle-reverse");
   ok &= Require(

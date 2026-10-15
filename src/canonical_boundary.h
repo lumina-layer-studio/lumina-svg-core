@@ -5,8 +5,8 @@
 // The rule: a painted region is expressed as simple rings with a shell/hole
 // hierarchy rebuilt from containment and nesting parity. The region itself is
 // taken from integer linework. Quantized cuts can bend its segments; the
-// accumulated boundary displacement is certified in grid units while removing
-// self-contact that downstream OGC/GEOS consumers reject.
+// boundary displacement from original linework is certified in grid units while
+// removing self-contact that downstream OGC/GEOS consumers reject.
 //
 // Boundary forms with defined handling:
 //   * a ring that visits one vertex twice (two lobes joined at a point),
@@ -28,6 +28,7 @@
 #include <limits>
 #include <memory>
 #include <numeric>
+#include <stdexcept>
 #include <type_traits>
 #include <unordered_map>
 #include <utility>
@@ -584,15 +585,71 @@ class BoundsIndex {
   std::vector<Node> nodes_;
 };
 
-// Node a ring set: split every segment at each intersection it takes part in,
-// including T contacts and collinear overlaps, so emitted paths meet only at
-// shared endpoints. A computed crossing lands on the domain grid, so callers
-// re-node the quantized result before using it. This is repeated nearest-grid
-// noding, with a certified displacement, rather than full hot-pixel rounding.
+// Computational sets are formed only by exact segment contacts. They are not
+// the physical shell/hole components, which are rebuilt from the final faces.
+// The optional audit leaves the usual already-noded path inexpensive.
+class NodingContactSets {
+ public:
+  explicit NodingContactSets(std::size_t rings)
+      : parent_(rings), sizes_(rings, 1), displaced_(rings, false),
+        dirty_(rings, false) {
+    std::iota(parent_.begin(), parent_.end(), 0);
+  }
+
+  std::size_t Find(std::size_t ring) {
+    auto root = ring;
+    while (parent_[root] != root) root = parent_[root];
+    while (parent_[ring] != ring) {
+      const auto next = parent_[ring];
+      parent_[ring] = root;
+      ring = next;
+    }
+    return root;
+  }
+
+  void Join(std::size_t first, std::size_t second) {
+    first = Find(first);
+    second = Find(second);
+    if (first == second) return;
+    if (sizes_[first] < sizes_[second]) std::swap(first, second);
+    parent_[second] = first;
+    sizes_[first] += sizes_[second];
+    displaced_[first] = displaced_[first] || displaced_[second];
+    dirty_[first] = true;
+    ++joins_;
+  }
+
+  void MarkDisplaced(std::size_t ring) {
+    const auto root = Find(ring);
+    displaced_[root] = true;
+    dirty_[root] = true;
+  }
+
+  bool NeedsRouting(std::size_t ring) {
+    const auto root = Find(ring);
+    return displaced_[root] && dirty_[root];
+  }
+
+  void MarkRouted(std::size_t ring) { dirty_[Find(ring)] = false; }
+  std::size_t Joins() const { return joins_; }
+
+ private:
+  std::vector<std::size_t> parent_;
+  std::vector<std::size_t> sizes_;
+  std::vector<bool> displaced_;
+  std::vector<bool> dirty_;
+  std::size_t joins_ = 0;
+};
+
+// Split segments at their exact contacts, including T contacts and collinear
+// overlaps. Computed crossings use the domain's quantization. Integer callers
+// use this same classifier to audit original contact sets before cell routing.
 template <typename Coord>
 class BoundaryNoder {
  public:
-  explicit BoundaryNoder(const std::vector<PathOf<Coord>>& paths) {
+  explicit BoundaryNoder(const std::vector<PathOf<Coord>>& paths,
+                         NodingContactSets* contact_sets = nullptr)
+      : contact_sets_(contact_sets) {
     for (std::size_t ring = 0; ring < paths.size(); ++ring) {
       const auto& path = paths[ring];
       const auto begin = segments_.size();
@@ -687,10 +744,12 @@ class BoundaryNoder {
   void AddCut(Segment& segment, std::size_t node) {
     if (node == segment.a || node == segment.b) return;
     if constexpr (std::is_same_v<Coord, int64_t>) {
-      if (!displaced_
-          && Math::Sign(Math::Cross(nodes_[node] - nodes_[segment.a],
-                                    nodes_[segment.b] - nodes_[segment.a])) != 0) {
+      const bool off_line = Math::Sign(Math::Cross(
+          nodes_[node] - nodes_[segment.a],
+          nodes_[segment.b] - nodes_[segment.a])) != 0;
+      if (off_line) {
         displaced_ = true;
+        if (contact_sets_ != nullptr) contact_sets_->MarkDisplaced(segment.ring);
       }
     }
     segment.cuts.push_back({Along(segment, node), node});
@@ -705,13 +764,14 @@ class BoundaryNoder {
   }
 
   // A collinear neighbour's endpoint that lands inside this segment splits it.
-  void AddCollinearEndpoint(Segment& segment, std::size_t node) {
+  bool AddCollinearEndpoint(Segment& segment, std::size_t node) {
     const auto direction = nodes_[segment.b] - nodes_[segment.a];
     const auto relative = nodes_[node] - nodes_[segment.a];
     const auto along = Math::Dot(relative, direction);
-    if (Math::Sign(along) < 0) return;
-    if (Math::Compare(Math::Dot(direction, direction), along) < 0) return;
+    if (Math::Sign(along) < 0) return false;
+    if (Math::Compare(Math::Dot(direction, direction), along) < 0) return false;
     AddCut(segment, node);
+    return true;
   }
 
   // Classify the contact between two segments on exact values: both crossing
@@ -732,10 +792,11 @@ class BoundaryNoder {
     auto denominator = Math::Cross(direction, other_direction);
     if (Math::Sign(denominator) == 0) {
       if (Math::Sign(Math::Cross(offset, direction)) != 0) return;
-      AddCollinearEndpoint(a, b.a);
-      AddCollinearEndpoint(a, b.b);
-      AddCollinearEndpoint(b, a.a);
-      AddCollinearEndpoint(b, a.b);
+      bool contact = AddCollinearEndpoint(a, b.a);
+      contact = AddCollinearEndpoint(a, b.b) || contact;
+      contact = AddCollinearEndpoint(b, a.a) || contact;
+      contact = AddCollinearEndpoint(b, a.b) || contact;
+      if (contact && contact_sets_ != nullptr) contact_sets_->Join(a.ring, b.ring);
       return;
     }
     auto numerator_a = Math::Cross(offset, other_direction);
@@ -749,6 +810,7 @@ class BoundaryNoder {
     if (Math::Compare(denominator, numerator_a) < 0) return;
     if (Math::Sign(numerator_b) < 0) return;
     if (Math::Compare(denominator, numerator_b) < 0) return;
+    if (contact_sets_ != nullptr) contact_sets_->Join(a.ring, b.ring);
     std::size_t node;
     if (Math::Sign(numerator_a) == 0) node = a.a;
     else if (Math::Compare(numerator_a, denominator) == 0) node = a.b;
@@ -858,6 +920,7 @@ class BoundaryNoder {
   // contact.
   std::vector<std::size_t> last_ring_;
   std::unordered_map<std::size_t, std::vector<std::size_t>> shared_uses_;
+  NodingContactSets* contact_sets_ = nullptr;
   bool already_noded_ = true;
   bool displaced_ = false;
   bool self_revisit_ = false;
@@ -989,6 +1052,8 @@ inline void BuildRingTree(std::vector<SimpleRing<Coord>> rings,
 }
 
 struct NodingStats {
+  // Kept for the existing statistics API. Original-linework integer routing
+  // needs at most one grid unit, regardless of contact-set rebuild count.
   uint64_t displaced_passes = 0;
 
   // Round the integer bound upward even when a double cannot represent it.
@@ -1007,14 +1072,136 @@ struct NodingStats {
   }
 };
 
-// Integer linework settles after finitely many productive passes: exact nearest
-// rounding is monotone in both axes, and exact projection orders distinct cuts
-// strictly. Each old segment retains its integer L1 length. Each productive
-// pass adds a nonzero edge occurrence; their count is bounded by initial L1
-// length. Adjacent duplicates/closure repeats are skipped by the constructor.
-// A strict crossing cannot round to both segments' ends unless those ends
-// coincide, contradicting a strict crossing, so a productive pass cannot stall.
-// Floating compensation retains its existing two-pass policy.
+// Does the original segment meet the cell owned by nearest rounding, with
+// halves away from zero? A positive center owns [c-.5,c+.5), zero owns the
+// open interval, and a negative center owns (c-.5,c+.5]. Clip both axes and
+// [0,1] together, retaining endpoint openness even at a cell corner.
+inline bool GridRoundingCellMeetsSegment(const PointOf<int64_t>& start,
+                                         const PointOf<int64_t>& end,
+                                         const PointOf<int64_t>& center) {
+  struct Limit {
+    int64_t numerator;
+    int64_t denominator;
+    bool closed;
+  };
+  const auto compare = [](const Limit& first, const Limit& second) {
+    return wide::Compare(wide::Multiply(first.numerator, second.denominator),
+                         wide::Multiply(second.numerator, first.denominator));
+  };
+  Limit lower{0, 1, true};
+  Limit upper{1, 1, true};
+  const auto clip_axis = [&](int64_t origin, int64_t direction, int64_t cell) {
+    if (direction == 0) return origin == cell;
+    // The engine bounds coordinates by 2^52. Doubled relative bounds and
+    // directions fit int64 (at most 2^54+1); fraction products fit signed 128.
+    // This is deliberately not a claim about arbitrary int64 coordinates.
+    const auto relative = (cell - origin) * int64_t{2};
+    const auto doubled_direction = direction * int64_t{2};
+    Limit axis_lower{relative - 1, doubled_direction, cell > 0};
+    Limit axis_upper{relative + 1, doubled_direction, cell < 0};
+    if (direction < 0) {
+      std::swap(axis_lower, axis_upper);
+      axis_lower.numerator = -axis_lower.numerator;
+      axis_upper.numerator = -axis_upper.numerator;
+      axis_lower.denominator = -axis_lower.denominator;
+      axis_upper.denominator = -axis_upper.denominator;
+    }
+    const int lower_order = compare(axis_lower, lower);
+    if (lower_order > 0) lower = axis_lower;
+    else if (lower_order == 0) lower.closed = lower.closed && axis_lower.closed;
+    const int upper_order = compare(axis_upper, upper);
+    if (upper_order < 0) upper = axis_upper;
+    else if (upper_order == 0) upper.closed = upper.closed && axis_upper.closed;
+    const int order = compare(lower, upper);
+    return order < 0 || (order == 0 && lower.closed && upper.closed);
+  };
+  return clip_axis(start.x, end.x - start.x, center.x)
+      && clip_axis(start.y, end.y - start.y, center.y);
+}
+
+inline PathOf<int64_t> RouteOriginalGridPath(
+    const PathOf<int64_t>& original,
+    const std::vector<PointOf<int64_t>>& centers,
+    const BoundsIndex<int64_t>& center_index) {
+  struct Visit {
+    PointOf<int64_t> center;
+    wide::Product along;
+  };
+  PathOf<int64_t> routed;
+  for (std::size_t segment = 0; segment < original.size(); ++segment) {
+    const auto& start = original[segment];
+    const auto& end = original[(segment + 1) % original.size()];
+    if (start == end) continue;
+    const auto direction = end - start;
+    std::vector<Visit> visits;
+    // An integer center outside this integer endpoint box cannot have its
+    // half-unit cell meet the segment, so no expanded/floating bounds are used.
+    center_index.Query(clipper::GetBounds(PathOf<int64_t>{start, end}), false,
+                       [&](std::size_t candidate) {
+      const auto& center = centers[candidate];
+      if (GridRoundingCellMeetsSegment(start, end, center)) {
+        visits.push_back({center, IntersectionMath<int64_t>::Dot(
+                                      center - start, direction)});
+      }
+    });
+    // Coordinatewise nearest rounding is monotone along an original segment.
+    // Distinct visited centers differ strictly on a nonzero direction axis,
+    // so their exact projections cannot tie. Reversal reverses this order.
+    std::sort(visits.begin(), visits.end(), [](const Visit& a, const Visit& b) {
+      return wide::Compare(a.along, b.along) < 0;
+    });
+    for (const auto& visit : visits) {
+      if (visit.center != end
+          && (routed.empty() || routed.back() != visit.center)) {
+        routed.push_back(visit.center);
+      }
+    }
+  }
+  if (routed.size() > 1 && routed.front() == routed.back()) routed.pop_back();
+  return routed;
+}
+
+inline void RouteDirtyOriginalGridSets(
+    const std::vector<PathOf<int64_t>>& originals,
+    const std::vector<PathOf<int64_t>>& original_cuts,
+    NodingContactSets& contact_sets,
+    std::vector<PathOf<int64_t>>& routed) {
+  std::vector<std::vector<std::size_t>> groups(originals.size());
+  for (std::size_t ring = 0; ring < originals.size(); ++ring) {
+    const auto group = contact_sets.Find(ring);
+    if (contact_sets.NeedsRouting(group)) groups[group].push_back(ring);
+  }
+  for (std::size_t group = 0; group < groups.size(); ++group) {
+    if (groups[group].empty()) continue;
+    std::vector<PointOf<int64_t>> centers;
+    for (const auto ring : groups[group]) {
+      centers.insert(centers.end(), original_cuts[ring].begin(),
+                     original_cuts[ring].end());
+    }
+    std::sort(centers.begin(), centers.end(), [](const auto& a, const auto& b) {
+      return a.x < b.x || (a.x == b.x && a.y < b.y);
+    });
+    centers.erase(std::unique(centers.begin(), centers.end()), centers.end());
+    std::vector<BoundsOf<int64_t>> bounds;
+    bounds.reserve(centers.size());
+    for (const auto& point : centers) {
+      bounds.push_back({point.x, point.y, point.x, point.y});
+    }
+    const BoundsIndex<int64_t> center_index(bounds);
+    for (const auto ring : groups[group]) {
+      routed[ring] = RouteOriginalGridPath(originals[ring], centers, center_index);
+    }
+    contact_sets.MarkRouted(group);
+  }
+}
+
+// Integer routing uses a finite arrangement of original endpoints and rounded
+// original contacts, rather than repeatedly splitting previously bent edges.
+// Each original segment visits each owned cell at most once, independent of its
+// coordinate span. Exact-contact sets keep unrelated coverage unchanged. A new
+// actual contact between routed sets joins them and rebuilds from the originals;
+// every such feedback step reduces the number of sets, so at most N-1 joins
+// occur. Floating compensation retains its existing two-pass policy.
 // `already_canonical`, when asked for, reports that the input was already a
 // legal boundary expression of its region, so a caller can keep emitting it as
 // it stands instead of re-expressing it.
@@ -1024,6 +1211,31 @@ inline std::vector<PathOf<Coord>> NodeToGrid(
     bool* already_canonical = nullptr,
     NodingStats* stats = nullptr) {
   if (stats != nullptr) *stats = {};
+  if constexpr (std::is_same_v<Coord, int64_t>) {
+    NodingContactSets contact_sets(paths.size());
+    BoundaryNoder<int64_t> original_noder(paths, &contact_sets);
+    const auto original_cuts = original_noder.Run();
+    if (already_canonical != nullptr) {
+      *already_canonical = original_noder.Canonical();
+    }
+    if (!original_noder.Displaced()) return original_cuts;
+    // Every center's cell meets its ORIGINAL segment, so the routed chain is
+    // within sqrt(1/2) of it. Its monotone projection covers the whole segment,
+    // certifying both Hausdorff directions by one grid unit across all rebuilds.
+    if (stats != nullptr) stats->displaced_passes = 1;
+    auto routed = original_cuts;
+    for (;;) {
+      RouteDirtyOriginalGridSets(paths, original_cuts, contact_sets, routed);
+      const auto before = contact_sets.Joins();
+      BoundaryNoder<int64_t> audit(routed, &contact_sets);
+      audit.Run();
+      if (contact_sets.Joins() != before) continue;
+      if (!audit.AlreadyNoded()) {
+        throw std::logic_error("Original-grid routing left an unshared contact");
+      }
+      return routed;
+    }
+  }
   std::vector<PathOf<Coord>> current = paths;
   bool first_pass = true;
   unsigned continuous_passes = 0;
@@ -1033,20 +1245,10 @@ inline std::vector<PathOf<Coord>> NodeToGrid(
     if (first_pass && already_canonical != nullptr) {
       *already_canonical = noder.Canonical();
     }
-    if constexpr (std::is_same_v<Coord, int64_t>) {
-      // Every new cut is within sqrt(1/2) of its exact intersection. The
-      // connected chain stays in the old segment's capsule and projects over
-      // the whole segment, bounding both Hausdorff directions by one grid unit.
-      // Sum only displaced passes; collinear/end-point splits have zero error.
-      // Growth of nonzero edges in one size_t vector also bounds this counter.
-      if (stats != nullptr && noder.Displaced()) ++stats->displaced_passes;
-    }
     if (noder.AlreadyNoded()) return noded;
     current = std::move(noded);
     first_pass = false;
-    if constexpr (!std::is_same_v<Coord, int64_t>) {
-      if (++continuous_passes == 2) return current;
-    }
+    if (++continuous_passes == 2) return current;
   }
 }
 
