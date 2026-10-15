@@ -37,6 +37,23 @@ find_package(Threads REQUIRED)
 include(cmake/Dependencies.cmake)
 lumina_fetch_native_svg_dependencies()
 
+# Recorder algorithms are owned by this project. Compile them into the static
+# recorder dependency so both the Python module and raster oracle use one copy.
+target_sources(
+  lunasvg
+  PRIVATE
+  ${CMAKE_CURRENT_SOURCE_DIR}/src/recorder/alpha.cpp
+  ${CMAKE_CURRENT_SOURCE_DIR}/src/recorder/capability.cpp
+  ${CMAKE_CURRENT_SOURCE_DIR}/src/recorder/exact_path.cpp
+  ${CMAKE_CURRENT_SOURCE_DIR}/src/recorder/numeric.cpp
+  ${CMAKE_CURRENT_SOURCE_DIR}/src/recorder/path_precision.cpp
+  ${CMAKE_CURRENT_SOURCE_DIR}/src/recorder/source_area.cpp
+  ${CMAKE_CURRENT_SOURCE_DIR}/src/recorder/transform.cpp
+)
+target_include_directories(
+  lunasvg PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include
+)
+
 pybind11_add_module(
   _lumina_svg_core
   MODULE

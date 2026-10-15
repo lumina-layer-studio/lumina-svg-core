@@ -16,7 +16,15 @@
 
 ### 预编译安装包
 
-在 [GitHub Releases](https://github.com/lumina-layer-studio/lumina-svg-core/releases) 下载与你的系统、架构和 Python 3.12～3.14 版本匹配的 wheel 文件：
+在支持的 Python 3.12～3.14 环境中，直接让 pip 自动选择公开 wheel：
+
+```bash
+python -m pip install --only-binary=lumina-svg-core --find-links https://github.com/lumina-layer-studio/lumina-svg-core/releases/expanded_assets/v0.3.1 "lumina-svg-core==0.3.1"
+```
+
+不需要安装 C++ 编译器、额外克隆第三方库、手工打补丁或准备本地 wheelhouse。命令安装的是已发布的 0.3.1，不是尚未合入的开发分支；LunaSVG/PlutoVG 和 Clipper2 已由维护者编译到扩展中。
+
+也可以在 [GitHub Releases](https://github.com/lumina-layer-studio/lumina-svg-core/releases) 下载匹配的 wheel 后安装：
 
 ```bash
 python -m pip install /path/to/lumina_svg_core-0.3.1-cp314-cp314-platform.whl
@@ -24,9 +32,11 @@ python -m pip install /path/to/lumina_svg_core-0.3.1-cp314-cp314-platform.whl
 
 请将示例文件名替换为实际下载的文件。构建目标包括 Windows x86-64、Apple Silicon Mac、Intel Mac 和 Linux x86-64。Python 3.12/3.13 的 Mac 安装包要求 macOS 12+，Python 3.14 要求 macOS 14+。Linux 使用 manylinux_2_28 基线，要求 glibc 2.28+；不覆盖 Alpine/musl、Windows ARM 或自由线程 Python。本项目目前没有发布到 PyPI。
 
-### 从源码构建
+### 从源码构建原生库（贡献者）
 
 需要 CPython 3.12～3.14、Git 和支持 C++17 的编译器：Windows 使用 MSVC，macOS 使用 Apple Clang，Linux 使用 GCC 或 Clang。首次构建需要联网下载固定版本的构建工具和 C++ 依赖。
+
+这是原生库贡献者的开发流程，不是从 Python/TypeScript 源码运行 Lumina Studio 的前置要求。
 
 ```bash
 git clone https://github.com/lumina-layer-studio/lumina-svg-core.git

@@ -722,7 +722,7 @@ index 7e6bc12..e41bab8 100644
      const int m_y;
  };
 diff --git a/source/lunasvg.cpp b/source/lunasvg.cpp
-index 0a4399f..7902aec 100644
+index 0a4399f..855b964 100644
 --- a/source/lunasvg.cpp
 +++ b/source/lunasvg.cpp
 @@ -5,6 +5,9 @@
@@ -735,7 +735,7 @@ index 0a4399f..7902aec 100644
  
  int lunasvg_version()
  {
-@@ -520,6 +523,126 @@ Element Document::documentElement() const
+@@ -520,6 +523,122 @@ Element Document::documentElement() const
      return m_rootElement.get();
  }
  
@@ -776,10 +776,6 @@ index 0a4399f..7902aec 100644
 +{
 +    if(m_nextSourceIndex == std::numeric_limits<int32_t>::max())
 +        throw std::length_error("svg_element_capacity");
-+    if(m_nextSourceIndex == std::numeric_limits<int32_t>::max()) {
-+        addCapabilityIssue("numeric_range_error");
-+        return -1;
-+    }
 +    return m_nextSourceIndex++;
 +}
 +
@@ -863,1430 +859,44 @@ index 0a4399f..7902aec 100644
  {
      if(layoutIfNeeded)
 diff --git a/source/svgelement.cpp b/source/svgelement.cpp
-index 7d62cc6..90a5554 100644
+index 7d62cc6..17017e4 100644
 --- a/source/svgelement.cpp
 +++ b/source/svgelement.cpp
-@@ -3,13 +3,1419 @@
+@@ -3,13 +3,33 @@
  #include "svggeometryelement.h"
  #include "svgtextelement.h"
  #include "svgproperty.h"
 +#include "svgparserutils.h"
  #include "svglayoutstate.h"
  #include "svgrenderstate.h"
++#include "lumina_svg_core/recorder/numeric.h"
++#include "lumina_svg_core/recorder/path_precision.h"
++#include "lumina_svg_core/recorder/transform.h"
  
  #include <cassert>
-+#include <cctype>
 +#include <cmath>
-+#include <cstdlib>
-+#include <initializer_list>
 +#include <limits>
 +#include <utility>
 +#include <vector>
  
  namespace lunasvg {
  
-+namespace {
-+
-+double exactRecordingNumber(std::string_view input, double fallback)
-+{
-+    stripLeadingAndTrailingSpaces(input);
-+    const std::string text(input);
-+    char* parsedEnd = nullptr;
-+    const double value = std::strtod(text.c_str(), &parsedEnd);
-+    if(parsedEnd == text.c_str() || !std::isfinite(value))
-+        return fallback;
-+    while(*parsedEnd != '\0'
-+            && std::isspace(static_cast<unsigned char>(*parsedEnd)))
-+        ++parsedEnd;
-+    return *parsedEnd == '\0' ? value : fallback;
-+}
-+
-+double exactRecordingLength(std::string_view input,
-+                            const Length& parsedLength,
-+                            double resolvedFallback)
-+{
-+    stripLeadingAndTrailingSpaces(input);
-+    const std::string text(input);
-+    char* parsedEnd = nullptr;
-+    const double value = std::strtod(text.c_str(), &parsedEnd);
-+    if(parsedEnd == text.c_str() || !std::isfinite(value))
-+        return resolvedFallback;
-+    std::string_view units(
-+        parsedEnd, text.c_str() + text.size() - parsedEnd);
-+    stripLeadingAndTrailingSpaces(units);
-+    if(units.empty() || units == "px")
-+        return value;
-+    if(units == "pc")
-+        return value * 16.0;
-+    if(units == "pt")
-+        return value * (96.0 / 72.0);
-+    if(units == "in")
-+        return value * 96.0;
-+    if(units == "cm")
-+        return value * (96.0 / 2.54);
-+    if(units == "mm")
-+        return value * (96.0 / 25.4);
-+    if(units == "%" || units == "em" || units == "ex") {
-+        const double parsedValue = parsedLength.value();
-+        if(parsedValue == 0.0)
-+            return value == 0.0 ? 0.0 : resolvedFallback;
-+        return resolvedFallback * value / parsedValue;
-+    }
-+    return resolvedFallback;
-+}
-+
-+std::vector<std::string_view> recordingLengthTokens(std::string_view input)
-+{
-+    stripLeadingAndTrailingSpaces(input);
-+    if(input == "none")
-+        return {};
-+    std::vector<std::string_view> output;
-+    while(!input.empty()) {
-+        while(!input.empty()
-+                && (std::isspace(static_cast<unsigned char>(input.front()))
-+                    || input.front() == ','))
-+            input.remove_prefix(1);
-+        if(input.empty())
-+            break;
-+        const std::string tail(input);
-+        char* parsedEnd = nullptr;
-+        std::strtod(tail.c_str(), &parsedEnd);
-+        if(parsedEnd == tail.c_str())
-+            return {};
-+        size_t tokenLength = static_cast<size_t>(
-+            parsedEnd - tail.c_str());
-+        while(tokenLength < input.size()
-+                && (std::isalpha(static_cast<unsigned char>(
-+                        input[tokenLength]))
-+                    || input[tokenLength] == '%'))
-+            ++tokenLength;
-+        output.push_back(input.substr(0, tokenLength));
-+        input.remove_prefix(tokenLength);
-+    }
-+    return output;
-+}
-+
-+uint32_t saturatingIncrement(uint32_t value)
-+{
-+    return value == std::numeric_limits<uint32_t>::max()
-+        ? value : value + 1;
-+}
-+
-+size_t pathParameterCount(char command)
-+{
-+    switch(static_cast<char>(std::tolower(
-+        static_cast<unsigned char>(command)))) {
-+    case 'm': case 'l': case 't': return 2;
-+    case 'h': case 'v': return 1;
-+    case 'c': return 6;
-+    case 's': case 'q': return 4;
-+    case 'a': return 7;
-+    default: return 0;
-+    }
-+}
-+
-+uint32_t computeRelativePathOperationCount(std::string_view value)
-+{
-+    const char* cursor = value.data();
-+    const char* end = cursor + value.size();
-+    char command = 0;
-+    size_t parameterIndex = 0;
-+    size_t parametersPerGroup = 0;
-+    uint32_t chain = 0;
-+    uint32_t subpathChain = 0;
-+    uint32_t maximumChain = 0;
-+    bool firstMoveGroup = false;
-+    while(cursor < end) {
-+        if(std::isspace(static_cast<unsigned char>(*cursor))
-+                || *cursor == ',') {
-+            ++cursor;
-+            continue;
-+        }
-+        if(std::isalpha(static_cast<unsigned char>(*cursor))) {
-+            command = *cursor++;
-+            parameterIndex = 0;
-+            parametersPerGroup = pathParameterCount(command);
-+            firstMoveGroup = command == 'm' || command == 'M';
-+            if(command == 'z' || command == 'Z')
-+                chain = subpathChain;
-+            continue;
-+        }
-+        char* parsedEnd = nullptr;
-+        if((command == 'a' || command == 'A')
-+                && (parameterIndex == 3 || parameterIndex == 4)
-+                && (*cursor == '0' || *cursor == '1')) {
-+            parsedEnd = const_cast<char*>(cursor + 1);
-+        } else {
-+            std::strtod(cursor, &parsedEnd);
-+        }
-+        if(parsedEnd == cursor) {
-+            ++cursor;
-+            continue;
-+        }
-+        cursor = parsedEnd;
-+        if(parametersPerGroup == 0)
-+            continue;
-+        parameterIndex += 1;
-+        if(parameterIndex < parametersPerGroup)
-+            continue;
-+        parameterIndex = 0;
-+        if(command >= 'a' && command <= 'z')
-+            chain = saturatingIncrement(chain);
-+        else
-+            chain = 0;
-+        maximumChain = std::max(maximumChain, chain);
-+        if(firstMoveGroup) {
-+            subpathChain = chain;
-+            firstMoveGroup = false;
-+            command = command == 'm' ? 'l' : 'L';
-+        }
-+    }
-+    return maximumChain;
-+}
-+
-+class SourceSubpathAreaTracker {
-+public:
-+    void include(long double x, long double y)
-+    {
-+        if(!m_active) {
-+            m_active = true;
-+            m_first_x = x;
-+            m_first_y = y;
-+            return;
-+        }
-+        const long double dx = x - m_first_x;
-+        const long double dy = y - m_first_y;
-+        if(!m_has_direction) {
-+            if(dx == 0 && dy == 0)
-+                return;
-+            m_direction_x = dx;
-+            m_direction_y = dy;
-+            m_has_direction = true;
-+            return;
-+        }
-+        const long double cross = m_direction_x * dy - m_direction_y * dx;
-+        const long double scale = std::max({
-+            std::abs(dx), std::abs(dy),
-+            std::abs(m_direction_x), std::abs(m_direction_y),
-+        });
-+        const long double error = std::numeric_limits<long double>::epsilon()
-+            * 128 * scale * scale;
-+        if(std::abs(cross) > error)
-+            m_area_potential = true;
-+    }
-+
-+    void markAreaPotential()
-+    {
-+        m_area_potential = true;
-+    }
-+
-+    bool active() const
-+    {
-+        return m_active;
-+    }
-+
-+    uint8_t areaPotential() const
-+    {
-+        return static_cast<uint8_t>(m_area_potential);
-+    }
-+
-+private:
-+    long double m_first_x{0};
-+    long double m_first_y{0};
-+    long double m_direction_x{0};
-+    long double m_direction_y{0};
-+    bool m_active{false};
-+    bool m_has_direction{false};
-+    bool m_area_potential{false};
-+};
-+
-+std::vector<uint8_t> computeSourceSubpathAreaPotential(
-+    std::string_view value)
-+{
-+    std::vector<uint8_t> result;
-+    SourceSubpathAreaTracker tracker;
-+    long double currentX = 0;
-+    long double currentY = 0;
-+    long double subpathX = 0;
-+    long double subpathY = 0;
-+    long double previousCubicX = 0;
-+    long double previousCubicY = 0;
-+    long double previousQuadraticX = 0;
-+    long double previousQuadraticY = 0;
-+    bool previousWasCubic = false;
-+    bool previousWasQuadratic = false;
-+    char command = 0;
-+    const char* cursor = value.data();
-+    const char* end = cursor + value.size();
-+    bool firstMoveGroup = false;
-+    const auto finishSubpath = [&]() {
-+        if(tracker.active())
-+            result.push_back(tracker.areaPotential());
-+        tracker = SourceSubpathAreaTracker{};
-+    };
-+    while(cursor < end) {
-+        while(cursor < end
-+                && (std::isspace(static_cast<unsigned char>(*cursor))
-+                    || *cursor == ','))
-+            ++cursor;
-+        if(cursor == end)
-+            break;
-+        if(std::isalpha(static_cast<unsigned char>(*cursor))) {
-+            command = *cursor++;
-+            if(pathParameterCount(command) == 0
-+                    && command != 'z' && command != 'Z')
-+                return {};
-+            firstMoveGroup = command == 'm' || command == 'M';
-+            if(command == 'z' || command == 'Z') {
-+                if(!tracker.active())
-+                    return {};
-+                tracker.include(subpathX, subpathY);
-+                currentX = subpathX;
-+                currentY = subpathY;
-+                previousWasCubic = false;
-+                previousWasQuadratic = false;
-+                command = 0;
-+            }
-+            continue;
-+        }
-+        const size_t parameterCount = pathParameterCount(command);
-+        if(parameterCount == 0)
-+            return {};
-+        std::array<long double, 7> values{};
-+        for(size_t parameter = 0; parameter < parameterCount; ++parameter) {
-+            while(cursor < end
-+                    && (std::isspace(static_cast<unsigned char>(*cursor))
-+                        || *cursor == ','))
-+                ++cursor;
-+            if(cursor == end
-+                    || std::isalpha(static_cast<unsigned char>(*cursor)))
-+                return {};
-+            char* parsedEnd = nullptr;
-+            values[parameter] = std::strtold(cursor, &parsedEnd);
-+            if(parsedEnd == cursor || parsedEnd > end
-+                    || !std::isfinite(values[parameter]))
-+                return {};
-+            cursor = parsedEnd;
-+        }
-+        const bool relative = command >= 'a' && command <= 'z';
-+        const char normalized = static_cast<char>(std::tolower(
-+            static_cast<unsigned char>(command)));
-+        const auto xValue = [&](size_t parameter) {
-+            return values[parameter] + (relative ? currentX : 0);
-+        };
-+        const auto yValue = [&](size_t parameter) {
-+            return values[parameter] + (relative ? currentY : 0);
-+        };
-+        if(normalized == 'm') {
-+            if(firstMoveGroup) {
-+                finishSubpath();
-+                currentX = xValue(0);
-+                currentY = yValue(1);
-+                subpathX = currentX;
-+                subpathY = currentY;
-+                tracker.include(currentX, currentY);
-+                firstMoveGroup = false;
-+                command = relative ? 'l' : 'L';
-+            } else {
-+                currentX = xValue(0);
-+                currentY = yValue(1);
-+                tracker.include(currentX, currentY);
-+            }
-+            previousWasCubic = false;
-+            previousWasQuadratic = false;
-+        } else if(normalized == 'l') {
-+            currentX = xValue(0);
-+            currentY = yValue(1);
-+            tracker.include(currentX, currentY);
-+            previousWasCubic = false;
-+            previousWasQuadratic = false;
-+        } else if(normalized == 'h') {
-+            currentX = values[0] + (relative ? currentX : 0);
-+            tracker.include(currentX, currentY);
-+            previousWasCubic = false;
-+            previousWasQuadratic = false;
-+        } else if(normalized == 'v') {
-+            currentY = values[0] + (relative ? currentY : 0);
-+            tracker.include(currentX, currentY);
-+            previousWasCubic = false;
-+            previousWasQuadratic = false;
-+        } else if(normalized == 'c') {
-+            const long double control1X = xValue(0);
-+            const long double control1Y = yValue(1);
-+            const long double control2X = xValue(2);
-+            const long double control2Y = yValue(3);
-+            const long double endX = xValue(4);
-+            const long double endY = yValue(5);
-+            tracker.include(control1X, control1Y);
-+            tracker.include(control2X, control2Y);
-+            tracker.include(endX, endY);
-+            currentX = endX;
-+            currentY = endY;
-+            previousCubicX = control2X;
-+            previousCubicY = control2Y;
-+            previousWasCubic = true;
-+            previousWasQuadratic = false;
-+        } else if(normalized == 's') {
-+            const long double control1X = previousWasCubic
-+                ? currentX * 2 - previousCubicX : currentX;
-+            const long double control1Y = previousWasCubic
-+                ? currentY * 2 - previousCubicY : currentY;
-+            const long double control2X = xValue(0);
-+            const long double control2Y = yValue(1);
-+            const long double endX = xValue(2);
-+            const long double endY = yValue(3);
-+            tracker.include(control1X, control1Y);
-+            tracker.include(control2X, control2Y);
-+            tracker.include(endX, endY);
-+            currentX = endX;
-+            currentY = endY;
-+            previousCubicX = control2X;
-+            previousCubicY = control2Y;
-+            previousWasCubic = true;
-+            previousWasQuadratic = false;
-+        } else if(normalized == 'q') {
-+            previousQuadraticX = xValue(0);
-+            previousQuadraticY = yValue(1);
-+            tracker.include(previousQuadraticX, previousQuadraticY);
-+            currentX = xValue(2);
-+            currentY = yValue(3);
-+            tracker.include(currentX, currentY);
-+            previousWasCubic = false;
-+            previousWasQuadratic = true;
-+        } else if(normalized == 't') {
-+            previousQuadraticX = previousWasQuadratic
-+                ? currentX * 2 - previousQuadraticX : currentX;
-+            previousQuadraticY = previousWasQuadratic
-+                ? currentY * 2 - previousQuadraticY : currentY;
-+            tracker.include(previousQuadraticX, previousQuadraticY);
-+            currentX = xValue(0);
-+            currentY = yValue(1);
-+            tracker.include(currentX, currentY);
-+            previousWasCubic = false;
-+            previousWasQuadratic = true;
-+        } else if(normalized == 'a') {
-+            const long double endX = xValue(5);
-+            const long double endY = yValue(6);
-+            if(std::abs(values[0]) > 0 && std::abs(values[1]) > 0
-+                    && (endX != currentX || endY != currentY))
-+                tracker.markAreaPotential();
-+            currentX = endX;
-+            currentY = endY;
-+            tracker.include(currentX, currentY);
-+            previousWasCubic = false;
-+            previousWasQuadratic = false;
-+        } else {
-+            return {};
-+        }
-+    }
-+    finishSubpath();
-+    return result;
-+}
-+
-+uint32_t computeTransformOperationCount(std::string_view value)
-+{
-+    uint32_t count = 0;
-+    for(size_t index = 0; index < value.size(); ++index) {
-+        if(!std::isalpha(static_cast<unsigned char>(value[index])))
-+            continue;
-+        while(index + 1 < value.size()
-+                && std::isalpha(static_cast<unsigned char>(value[index + 1])))
-+            ++index;
-+        size_t next = index + 1;
-+        while(next < value.size()
-+                && std::isspace(static_cast<unsigned char>(value[next])))
-+            ++next;
-+        if(next < value.size() && value[next] == '(')
-+            count = saturatingIncrement(count);
-+    }
-+    return count;
-+}
-+
-+double floatUlp(float value)
-+{
-+    if(!std::isfinite(value))
-+        return std::numeric_limits<double>::infinity();
-+    const float upward = std::nextafter(
-+        value, std::numeric_limits<float>::infinity());
-+    const float downward = std::nextafter(
-+        value, -std::numeric_limits<float>::infinity());
-+    return std::max(
-+        std::abs(static_cast<double>(upward) - value),
-+        std::abs(static_cast<double>(value) - downward));
-+}
-+
-+double computeArcLoweringPrecisionError(std::string_view value)
-+{
-+    constexpr double PI = 3.141592653589793238462643383279502884;
-+    constexpr float FLOAT_DEGREES_TO_RADIANS =
-+        3.14159265358979323846f / 180.0f;
-+    // PlutoVG lowers arcs in spans no larger than pi/8. One part per million
-+    // of the major radius conservatively covers the cubic approximation;
-+    // input-angle and stored-float errors are charged separately below.
-+    constexpr double ARC_CUBIC_RELATIVE_ERROR = 1.0e-6;
-+    constexpr double ARC_OPERATION_ULPS = 16.0;
-+
-+    const char* cursor = value.data();
-+    const char* end = cursor + value.size();
-+    char command = 0;
-+    size_t parameterIndex = 0;
-+    double radiusX = 0;
-+    double radiusY = 0;
-+    double maximumError = 0;
-+    while(cursor < end) {
-+        if(std::isspace(static_cast<unsigned char>(*cursor))
-+                || *cursor == ',') {
-+            ++cursor;
-+            continue;
-+        }
-+        if(std::isalpha(static_cast<unsigned char>(*cursor))) {
-+            command = *cursor++;
-+            parameterIndex = 0;
-+            continue;
-+        }
-+        char* parsedEnd = nullptr;
-+        const double parsed = std::strtod(cursor, &parsedEnd);
-+        if(parsedEnd == cursor) {
-+            ++cursor;
-+            continue;
-+        }
-+        cursor = parsedEnd;
-+        if(command != 'A' && command != 'a')
-+            continue;
-+        if(parameterIndex == 0) {
-+            radiusX = std::abs(parsed);
-+        } else if(parameterIndex == 1) {
-+            radiusY = std::abs(parsed);
-+        } else if(parameterIndex == 2 && radiusX > 0 && radiusY > 0) {
-+            const float floatRadiusX = static_cast<float>(radiusX);
-+            const float floatRadiusY = static_cast<float>(radiusY);
-+            const float floatAngle = static_cast<float>(parsed);
-+            const float floatRadians =
-+                floatAngle * FLOAT_DEGREES_TO_RADIANS;
-+            if(!std::isfinite(floatRadiusX)
-+                    || !std::isfinite(floatRadiusY)
-+                    || !std::isfinite(floatRadians)) {
-+                return std::numeric_limits<double>::infinity();
-+            }
-+            const double majorRadius = std::max(radiusX, radiusY);
-+            const double angleErrorRadians = std::abs(
-+                static_cast<double>(floatRadians) - parsed * PI / 180.0)
-+                + floatUlp(floatRadians) * ARC_OPERATION_ULPS;
-+            const double radiusStorageError = std::max(
-+                floatUlp(floatRadiusX), floatUlp(floatRadiusY))
-+                * ARC_OPERATION_ULPS;
-+            const double operationError = majorRadius
-+                * std::numeric_limits<double>::epsilon()
-+                * ARC_OPERATION_ULPS;
-+            maximumError = std::max(
-+                maximumError,
-+                majorRadius * (ARC_CUBIC_RELATIVE_ERROR
-+                    + angleErrorRadians)
-+                    + radiusStorageError + operationError);
-+        }
-+        parameterIndex = (parameterIndex + 1) % 7;
-+    }
-+    return maximumError;
-+}
-+
-+std::vector<double> numericValues(std::string_view value)
-+{
-+    std::vector<double> values;
-+    const char* cursor = value.data();
-+    const char* end = cursor + value.size();
-+    while(cursor < end) {
-+        char* parsedEnd = nullptr;
-+        const double parsed = std::strtod(cursor, &parsedEnd);
-+        if(parsedEnd != cursor) {
-+            values.push_back(parsed);
-+            cursor = parsedEnd;
-+        } else {
-+            ++cursor;
-+        }
-+    }
-+    return values;
-+}
-+
-+struct ParsedPathNumber {
-+    float actual{0};
-+    long double exact{0};
-+};
-+
-+bool parsePathNumber(const char*& cursor, const char* end,
-+                     ParsedPathNumber& number)
-+{
-+    const char* position = cursor;
-+    float actualInteger = 0;
-+    float actualFraction = 0;
-+    float actualExponent = 0;
-+    long double exactInteger = 0;
-+    long double exactFraction = 0;
-+    long double exactDivisor = 1;
-+    int sign = 1;
-+    int exponentSign = 1;
-+    if(position < end && *position == '+') {
-+        ++position;
-+    } else if(position < end && *position == '-') {
-+        ++position;
-+        sign = -1;
-+    }
-+    if(position >= end
-+            || (*position != '.'
-+                && !std::isdigit(static_cast<unsigned char>(*position))))
-+        return false;
-+    if(std::isdigit(static_cast<unsigned char>(*position))) {
-+        do {
-+            const int digit = *position++ - '0';
-+            actualInteger = 10.f * actualInteger + digit;
-+            exactInteger = 10.0L * exactInteger + digit;
-+        } while(position < end
-+                && std::isdigit(static_cast<unsigned char>(*position)));
-+    }
-+    if(position < end && *position == '.') {
-+        ++position;
-+        if(position >= end
-+                || !std::isdigit(static_cast<unsigned char>(*position)))
-+            return false;
-+        float actualDivisor = 1.f;
-+        do {
-+            const int digit = *position++ - '0';
-+            actualFraction = 10.f * actualFraction + digit;
-+            actualDivisor *= 10.f;
-+            exactFraction = 10.0L * exactFraction + digit;
-+            exactDivisor *= 10.0L;
-+        } while(position < end
-+                && std::isdigit(static_cast<unsigned char>(*position)));
-+        actualFraction /= actualDivisor;
-+        exactFraction /= exactDivisor;
-+    }
-+    if(position < end && (*position == 'e' || *position == 'E')) {
-+        ++position;
-+        if(position < end && *position == '+') {
-+            ++position;
-+        } else if(position < end && *position == '-') {
-+            ++position;
-+            exponentSign = -1;
-+        }
-+        if(position >= end
-+                || !std::isdigit(static_cast<unsigned char>(*position)))
-+            return false;
-+        do {
-+            actualExponent = 10.f * actualExponent + (*position++ - '0');
-+        } while(position < end
-+                && std::isdigit(static_cast<unsigned char>(*position)));
-+    }
-+    number.actual = static_cast<float>(sign)
-+        * (actualInteger + actualFraction);
-+    number.exact = static_cast<long double>(sign)
-+        * (exactInteger + exactFraction);
-+    if(actualExponent != 0) {
-+        number.actual *= std::pow(
-+            10.f, static_cast<float>(exponentSign) * actualExponent);
-+        number.exact *= std::pow(
-+            10.0L,
-+            static_cast<long double>(exponentSign) * actualExponent);
-+    }
-+    if(!std::isfinite(number.actual) || !std::isfinite(number.exact))
-+        return false;
-+    cursor = position;
-+    return true;
-+}
-+
-+void skipPathSeparators(const char*& cursor, const char* end)
-+{
-+    while(cursor < end
-+            && (std::isspace(static_cast<unsigned char>(*cursor))
-+                || *cursor == ','))
-+        ++cursor;
-+}
-+
-+struct PathParseWork {
-+    size_t verbs{0};
-+    size_t points{0};
-+    bool valid{true};
-+    bool exceeded{false};
-+};
-+
-+size_t expandedArcSegmentCount(float currentX, float currentY,
-+                               const std::array<ParsedPathNumber, 7>& values,
-+                               bool relative)
-+{
-+    constexpr double PI = 3.141592653589793238462643383279502884;
-+    double radiusX = std::abs(static_cast<double>(values[0].actual));
-+    double radiusY = std::abs(static_cast<double>(values[1].actual));
-+    const double angle = static_cast<double>(values[2].actual) * PI / 180.0;
-+    const double endX = static_cast<double>(values[5].actual)
-+        + (relative ? currentX : 0.f);
-+    const double endY = static_cast<double>(values[6].actual)
-+        + (relative ? currentY : 0.f);
-+    if(radiusX == 0.0 || radiusY == 0.0
-+            || (endX == currentX && endY == currentY))
-+        return 1;
-+
-+    const double cosine = std::cos(angle);
-+    const double sine = std::sin(angle);
-+    const double deltaX = (static_cast<double>(currentX) - endX) * 0.5;
-+    const double deltaY = (static_cast<double>(currentY) - endY) * 0.5;
-+    const double transformedX = cosine * deltaX + sine * deltaY;
-+    const double transformedY = -sine * deltaX + cosine * deltaY;
-+    const double radiusScale = transformedX * transformedX
-+            / (radiusX * radiusX)
-+        + transformedY * transformedY / (radiusY * radiusY);
-+    if(radiusScale > 1.0) {
-+        const double scale = std::sqrt(radiusScale);
-+        radiusX *= scale;
-+        radiusY *= scale;
-+    }
-+
-+    const double numerator = std::max(
-+        0.0,
-+        radiusX * radiusX * radiusY * radiusY
-+            - radiusX * radiusX * transformedY * transformedY
-+            - radiusY * radiusY * transformedX * transformedX);
-+    const double denominator = radiusX * radiusX
-+            * transformedY * transformedY
-+        + radiusY * radiusY * transformedX * transformedX;
-+    if(denominator == 0.0)
-+        return 1;
-+    double centerScale = std::sqrt(numerator / denominator);
-+    const bool largeArc = values[3].exact == 1.0L;
-+    const bool sweep = values[4].exact == 1.0L;
-+    if(largeArc == sweep)
-+        centerScale = -centerScale;
-+    const double centerX = centerScale * radiusX * transformedY / radiusY;
-+    const double centerY = -centerScale * radiusY * transformedX / radiusX;
-+    const double startVectorX = (transformedX - centerX) / radiusX;
-+    const double startVectorY = (transformedY - centerY) / radiusY;
-+    const double endVectorX = (-transformedX - centerX) / radiusX;
-+    const double endVectorY = (-transformedY - centerY) / radiusY;
-+    double sweepAngle = std::atan2(
-+        startVectorX * endVectorY - startVectorY * endVectorX,
-+        startVectorX * endVectorX + startVectorY * endVectorY);
-+    if(sweepAngle < 0.0 && sweep)
-+        sweepAngle += 2.0 * PI;
-+    else if(sweepAngle > 0.0 && !sweep)
-+        sweepAngle -= 2.0 * PI;
-+    if(!std::isfinite(sweepAngle))
-+        return 16;
-+    return std::max<size_t>(
-+        1, static_cast<size_t>(std::ceil(std::abs(sweepAngle) / (PI / 8.0))));
-+}
-+
-+PathParseWork computePathParseWork(std::string_view value)
-+{
-+    PathParseWork work;
-+    const char* cursor = value.data();
-+    const char* end = cursor + value.size();
-+    char command = 0;
-+    char previousCommand = 0;
-+    float currentX = 0.f;
-+    float currentY = 0.f;
-+    float startX = 0.f;
-+    float startY = 0.f;
-+    bool firstCommand = true;
-+    const auto add = [&](size_t verbs, size_t points) {
-+        if(verbs > std::numeric_limits<size_t>::max() - work.verbs
-+                || points > std::numeric_limits<size_t>::max() - work.points) {
-+            work.exceeded = true;
-+            return false;
-+        }
-+        work.verbs += verbs;
-+        work.points += points;
-+        return true;
-+    };
-+
-+    skipPathSeparators(cursor, end);
-+    while(cursor < end) {
-+        if(std::isalpha(static_cast<unsigned char>(*cursor))) {
-+            command = *cursor++;
-+            skipPathSeparators(cursor, end);
-+        }
-+        if(command == 0
-+                || (firstCommand && command != 'M' && command != 'm')) {
-+            work.valid = false;
-+            return work;
-+        }
-+        const char normalized = static_cast<char>(std::tolower(
-+            static_cast<unsigned char>(command)));
-+        if(normalized == 'z') {
-+            if(previousCommand == 'Z' || previousCommand == 'z') {
-+                work.valid = false;
-+                return work;
-+            }
-+            if(!add(1, 1))
-+                return work;
-+            currentX = startX;
-+            currentY = startY;
-+            previousCommand = command;
-+            command = 0;
-+            firstCommand = false;
-+            skipPathSeparators(cursor, end);
-+            continue;
-+        }
-+
-+        const size_t parameterCount = pathParameterCount(command);
-+        if(parameterCount == 0) {
-+            work.valid = false;
-+            return work;
-+        }
-+        std::array<ParsedPathNumber, 7> values{};
-+        for(size_t index = 0; index < parameterCount; ++index) {
-+            if(!parsePathNumber(cursor, end, values[index])) {
-+                work.valid = false;
-+                return work;
-+            }
-+            skipPathSeparators(cursor, end);
-+        }
-+        if(normalized == 'a'
-+                && ((values[3].exact != 0.0L && values[3].exact != 1.0L)
-+                    || (values[4].exact != 0.0L
-+                        && values[4].exact != 1.0L))) {
-+            work.valid = false;
-+            return work;
-+        }
-+
-+        const bool relative = command >= 'a' && command <= 'z';
-+        size_t expandedVerbs = 1;
-+        size_t expandedPoints = 1;
-+        if(normalized == 'c' || normalized == 's'
-+                || normalized == 'q' || normalized == 't') {
-+            expandedPoints = 3;
-+        } else if(normalized == 'a') {
-+            expandedVerbs = expandedArcSegmentCount(
-+                currentX, currentY, values, relative);
-+            expandedPoints = expandedVerbs * 3;
-+        }
-+        if(!add(expandedVerbs, expandedPoints))
-+            return work;
-+
-+        const auto coordinate = [&](size_t index, float current) {
-+            return values[index].actual + (relative ? current : 0.f);
-+        };
-+        if(normalized == 'm' || normalized == 'l'
-+                || normalized == 't') {
-+            currentX = coordinate(0, currentX);
-+            currentY = coordinate(1, currentY);
-+            if(normalized == 'm') {
-+                startX = currentX;
-+                startY = currentY;
-+                command = relative ? 'l' : 'L';
-+            }
-+        } else if(normalized == 'h') {
-+            currentX = coordinate(0, currentX);
-+        } else if(normalized == 'v') {
-+            currentY = coordinate(0, currentY);
-+        } else if(normalized == 'c') {
-+            currentX = coordinate(4, currentX);
-+            currentY = coordinate(5, currentY);
-+        } else if(normalized == 's' || normalized == 'q') {
-+            currentX = coordinate(2, currentX);
-+            currentY = coordinate(3, currentY);
-+        } else if(normalized == 'a') {
-+            currentX = coordinate(5, currentX);
-+            currentY = coordinate(6, currentY);
-+        }
-+        previousCommand = command;
-+        firstCommand = false;
-+    }
-+    return work;
-+}
-+
-+struct PointListParseWork {
-+    size_t points{0};
-+    bool valid{true};
-+    bool exceeded{false};
-+};
-+
-+PointListParseWork computePointListParseWork(std::string_view input)
-+{
-+    PointListParseWork work;
-+    stripLeadingSpaces(input);
-+    while(!input.empty()) {
-+        float coordinate = 0.f;
-+        if(!parseNumber(input, coordinate)
-+                || !skipOptionalSpacesOrComma(input)
-+                || !parseNumber(input, coordinate)) {
-+            work.valid = false;
-+            return work;
-+        }
-+        if(work.points == std::numeric_limits<size_t>::max()) {
-+            work.exceeded = true;
-+            return work;
-+        }
-+        ++work.points;
-+        skipOptionalSpacesOrComma(input);
-+    }
-+    return work;
-+}
-+
-+double computePathInputPrecisionError(
-+    std::string_view value, bool& strokeDirectionAmbiguous,
-+    bool& isolatedStrokeDirectionAmbiguous,
-+    double& maximumErrorX, double& maximumErrorY,
-+    bool& sourceHasLoweredCurve)
-+{
-+    strokeDirectionAmbiguous = false;
-+    isolatedStrokeDirectionAmbiguous = false;
-+    maximumErrorX = 0;
-+    maximumErrorY = 0;
-+    sourceHasLoweredCurve = false;
-+    const char* cursor = value.data();
-+    const char* end = cursor + value.size();
-+    char command = 0;
-+    char previousCommand = 0;
-+    float actualX = 0;
-+    float actualY = 0;
-+    float actualStartX = 0;
-+    float actualStartY = 0;
-+    float actualControlX = 0;
-+    float actualControlY = 0;
-+    long double exactX = 0;
-+    long double exactY = 0;
-+    long double exactStartX = 0;
-+    long double exactStartY = 0;
-+    long double exactControlX = 0;
-+    long double exactControlY = 0;
-+    long double maximumError = 0;
-+    long double maximumIsotropicError = 0;
-+    long double maximumCoordinateErrorX = 0;
-+    long double maximumCoordinateErrorY = 0;
-+    size_t subpathNonzeroSegmentCount = 0;
-+    bool subpathHasAmbiguousLine = false;
-+    const auto finishSubpath = [&]() {
-+        if(subpathHasAmbiguousLine) {
-+            if(subpathNonzeroSegmentCount > 1)
-+                strokeDirectionAmbiguous = true;
-+            else
-+                isolatedStrokeDirectionAmbiguous = true;
-+        }
-+        subpathNonzeroSegmentCount = 0;
-+        subpathHasAmbiguousLine = false;
-+    };
-+    const auto includePoint = [&](float actualPointX, float actualPointY,
-+                                  long double exactPointX,
-+                                  long double exactPointY) {
-+        maximumCoordinateErrorX = std::max(
-+            maximumCoordinateErrorX,
-+            std::abs(static_cast<long double>(actualPointX) - exactPointX));
-+        maximumCoordinateErrorY = std::max(
-+            maximumCoordinateErrorY,
-+            std::abs(static_cast<long double>(actualPointY) - exactPointY));
-+        maximumError = std::max({
-+            maximumError,
-+            maximumCoordinateErrorX,
-+            maximumCoordinateErrorY,
-+        });
-+    };
-+    const auto includeStrokeDirection = [
-+        &strokeDirectionAmbiguous](
-+        float actualFromX, float actualFromY,
-+        long double exactFromX, long double exactFromY,
-+        float actualToX, float actualToY,
-+        long double exactToX, long double exactToY,
-+        float fallbackX, float fallbackY) {
-+        const long double exactVectorX = exactToX - exactFromX;
-+        const long double exactVectorY = exactToY - exactFromY;
-+        const long double exactLength = std::hypot(
-+            exactVectorX, exactVectorY);
-+        if(exactLength == 0.0L
-+                || (fallbackX == actualFromX
-+                    && fallbackY == actualFromY))
-+            return;
-+        const long double actualVectorX =
-+            static_cast<long double>(actualToX) - actualFromX;
-+        const long double actualVectorY =
-+            static_cast<long double>(actualToY) - actualFromY;
-+        const long double actualLength = std::hypot(
-+            actualVectorX, actualVectorY);
-+        const long double vectorError = std::hypot(
-+            actualVectorX - exactVectorX,
-+            actualVectorY - exactVectorY);
-+        if(actualLength <= vectorError)
-+            strokeDirectionAmbiguous = true;
-+    };
-+    const auto includeLineDirection = [
-+        &subpathNonzeroSegmentCount, &subpathHasAmbiguousLine](
-+        float actualFromX, float actualFromY,
-+        long double exactFromX, long double exactFromY,
-+        float actualToX, float actualToY,
-+        long double exactToX, long double exactToY) {
-+        const long double exactVectorX = exactToX - exactFromX;
-+        const long double exactVectorY = exactToY - exactFromY;
-+        if(exactVectorX == 0.0L && exactVectorY == 0.0L)
-+            return;
-+        ++subpathNonzeroSegmentCount;
-+        const long double actualVectorX =
-+            static_cast<long double>(actualToX) - actualFromX;
-+        const long double actualVectorY =
-+            static_cast<long double>(actualToY) - actualFromY;
-+        const long double actualLength = std::hypot(
-+            actualVectorX, actualVectorY);
-+        const long double vectorError = std::hypot(
-+            actualVectorX - exactVectorX,
-+            actualVectorY - exactVectorY);
-+        if(actualLength <= vectorError)
-+            subpathHasAmbiguousLine = true;
-+    };
-+    const auto includeNonlinearSegment = [
-+        &subpathNonzeroSegmentCount](
-+        long double startX, long double startY,
-+        std::initializer_list<std::pair<long double, long double>> points) {
-+        for(const auto& point : points) {
-+            if(point.first != startX || point.second != startY) {
-+                ++subpathNonzeroSegmentCount;
-+                return;
-+            }
-+        }
-+    };
-+    skipPathSeparators(cursor, end);
-+    while(cursor < end) {
-+        if(std::isalpha(static_cast<unsigned char>(*cursor))) {
-+            command = *cursor++;
-+            skipPathSeparators(cursor, end);
-+        }
-+        if(command == 0)
-+            return std::numeric_limits<double>::infinity();
-+        const char normalized = static_cast<char>(std::tolower(
-+            static_cast<unsigned char>(command)));
-+        if(normalized == 'q' || normalized == 't' || normalized == 'a')
-+            sourceHasLoweredCurve = true;
-+        if(normalized == 'z') {
-+            includeLineDirection(
-+                actualX, actualY, exactX, exactY,
-+                actualStartX, actualStartY, exactStartX, exactStartY);
-+            actualX = actualStartX;
-+            actualY = actualStartY;
-+            exactX = exactStartX;
-+            exactY = exactStartY;
-+            finishSubpath();
-+            previousCommand = command;
-+            command = 0;
-+            skipPathSeparators(cursor, end);
-+            continue;
-+        }
-+        const size_t parameterCount = pathParameterCount(command);
-+        if(parameterCount == 0)
-+            return std::numeric_limits<double>::infinity();
-+        std::array<ParsedPathNumber, 7> values{};
-+        for(size_t index = 0; index < parameterCount; ++index) {
-+            if(!parsePathNumber(cursor, end, values[index]))
-+                return std::numeric_limits<double>::infinity();
-+            skipPathSeparators(cursor, end);
-+        }
-+        const bool relative = command >= 'a' && command <= 'z';
-+        const auto actualCoordinate = [&](size_t index, float current) {
-+            return relative ? values[index].actual + current
-+                : values[index].actual;
-+        };
-+        const auto exactCoordinate = [&](size_t index,
-+                                         long double current) {
-+            return relative ? values[index].exact + current
-+                : values[index].exact;
-+        };
-+        if(normalized == 'm') {
-+            finishSubpath();
-+            actualX = actualCoordinate(0, actualX);
-+            actualY = actualCoordinate(1, actualY);
-+            exactX = exactCoordinate(0, exactX);
-+            exactY = exactCoordinate(1, exactY);
-+            includePoint(actualX, actualY, exactX, exactY);
-+            actualStartX = actualX;
-+            actualStartY = actualY;
-+            exactStartX = exactX;
-+            exactStartY = exactY;
-+            command = relative ? 'l' : 'L';
-+        } else if(normalized == 'l') {
-+            const float previousActualX = actualX;
-+            const float previousActualY = actualY;
-+            const long double previousExactX = exactX;
-+            const long double previousExactY = exactY;
-+            actualX = actualCoordinate(0, actualX);
-+            actualY = actualCoordinate(1, actualY);
-+            exactX = exactCoordinate(0, exactX);
-+            exactY = exactCoordinate(1, exactY);
-+            includeLineDirection(
-+                previousActualX, previousActualY,
-+                previousExactX, previousExactY,
-+                actualX, actualY, exactX, exactY);
-+            includePoint(actualX, actualY, exactX, exactY);
-+        } else if(normalized == 'h') {
-+            const float previousActualX = actualX;
-+            const long double previousExactX = exactX;
-+            actualX = actualCoordinate(0, actualX);
-+            exactX = exactCoordinate(0, exactX);
-+            includeLineDirection(
-+                previousActualX, actualY, previousExactX, exactY,
-+                actualX, actualY, exactX, exactY);
-+            includePoint(actualX, actualY, exactX, exactY);
-+        } else if(normalized == 'v') {
-+            const float previousActualY = actualY;
-+            const long double previousExactY = exactY;
-+            actualY = actualCoordinate(0, actualY);
-+            exactY = exactCoordinate(0, exactY);
-+            includeLineDirection(
-+                actualX, previousActualY, exactX, previousExactY,
-+                actualX, actualY, exactX, exactY);
-+            includePoint(actualX, actualY, exactX, exactY);
-+        } else if(normalized == 'c') {
-+            const float actualStartX = actualX;
-+            const float actualStartY = actualY;
-+            const long double exactStartX = exactX;
-+            const long double exactStartY = exactY;
-+            const float actualControl1X = actualCoordinate(0, actualX);
-+            const float actualControl1Y = actualCoordinate(1, actualY);
-+            const float actualControl2X = actualCoordinate(2, actualX);
-+            const float actualControl2Y = actualCoordinate(3, actualY);
-+            const long double exactControl1X = exactCoordinate(0, exactX);
-+            const long double exactControl1Y = exactCoordinate(1, exactY);
-+            const long double exactControl2X = exactCoordinate(2, exactX);
-+            const long double exactControl2Y = exactCoordinate(3, exactY);
-+            const float actualEndX = actualCoordinate(4, actualX);
-+            const float actualEndY = actualCoordinate(5, actualY);
-+            const long double exactEndX = exactCoordinate(4, exactX);
-+            const long double exactEndY = exactCoordinate(5, exactY);
-+            includeNonlinearSegment(
-+                exactStartX, exactStartY,
-+                {{exactControl1X, exactControl1Y},
-+                 {exactControl2X, exactControl2Y},
-+                 {exactEndX, exactEndY}});
-+            includeStrokeDirection(
-+                actualStartX, actualStartY, exactStartX, exactStartY,
-+                actualControl1X, actualControl1Y,
-+                exactControl1X, exactControl1Y,
-+                actualControl2X != actualStartX
-+                        || actualControl2Y != actualStartY
-+                    ? actualControl2X : actualEndX,
-+                actualControl2X != actualStartX
-+                        || actualControl2Y != actualStartY
-+                    ? actualControl2Y : actualEndY);
-+            includeStrokeDirection(
-+                actualEndX, actualEndY, exactEndX, exactEndY,
-+                actualControl2X, actualControl2Y,
-+                exactControl2X, exactControl2Y,
-+                actualControl1X != actualEndX
-+                        || actualControl1Y != actualEndY
-+                    ? actualControl1X : actualStartX,
-+                actualControl1X != actualEndX
-+                        || actualControl1Y != actualEndY
-+                    ? actualControl1Y : actualStartY);
-+            actualX = actualEndX;
-+            actualY = actualEndY;
-+            exactX = exactEndX;
-+            exactY = exactEndY;
-+            includePoint(actualControl1X, actualControl1Y,
-+                         exactControl1X, exactControl1Y);
-+            includePoint(actualControl2X, actualControl2Y,
-+                         exactControl2X, exactControl2Y);
-+            includePoint(actualX, actualY, exactX, exactY);
-+            actualControlX = actualControl2X;
-+            actualControlY = actualControl2Y;
-+            exactControlX = exactControl2X;
-+            exactControlY = exactControl2Y;
-+        } else if(normalized == 's') {
-+            const float actualStartX = actualX;
-+            const float actualStartY = actualY;
-+            const long double exactStartX = exactX;
-+            const long double exactStartY = exactY;
-+            const bool reflect = previousCommand == 'C'
-+                || previousCommand == 'c' || previousCommand == 'S'
-+                || previousCommand == 's';
-+            const float actualControl1X = reflect
-+                ? 2.f * actualX - actualControlX : actualX;
-+            const float actualControl1Y = reflect
-+                ? 2.f * actualY - actualControlY : actualY;
-+            const long double exactControl1X = reflect
-+                ? 2.0L * exactX - exactControlX : exactX;
-+            const long double exactControl1Y = reflect
-+                ? 2.0L * exactY - exactControlY : exactY;
-+            const float actualControl2X = actualCoordinate(0, actualX);
-+            const float actualControl2Y = actualCoordinate(1, actualY);
-+            const long double exactControl2X = exactCoordinate(0, exactX);
-+            const long double exactControl2Y = exactCoordinate(1, exactY);
-+            const float actualEndX = actualCoordinate(2, actualX);
-+            const float actualEndY = actualCoordinate(3, actualY);
-+            const long double exactEndX = exactCoordinate(2, exactX);
-+            const long double exactEndY = exactCoordinate(3, exactY);
-+            includeNonlinearSegment(
-+                exactStartX, exactStartY,
-+                {{exactControl1X, exactControl1Y},
-+                 {exactControl2X, exactControl2Y},
-+                 {exactEndX, exactEndY}});
-+            includeStrokeDirection(
-+                actualStartX, actualStartY, exactStartX, exactStartY,
-+                actualControl1X, actualControl1Y,
-+                exactControl1X, exactControl1Y,
-+                actualControl2X != actualStartX
-+                        || actualControl2Y != actualStartY
-+                    ? actualControl2X : actualEndX,
-+                actualControl2X != actualStartX
-+                        || actualControl2Y != actualStartY
-+                    ? actualControl2Y : actualEndY);
-+            includeStrokeDirection(
-+                actualEndX, actualEndY, exactEndX, exactEndY,
-+                actualControl2X, actualControl2Y,
-+                exactControl2X, exactControl2Y,
-+                actualControl1X != actualEndX
-+                        || actualControl1Y != actualEndY
-+                    ? actualControl1X : actualStartX,
-+                actualControl1X != actualEndX
-+                        || actualControl1Y != actualEndY
-+                    ? actualControl1Y : actualStartY);
-+            actualX = actualEndX;
-+            actualY = actualEndY;
-+            exactX = exactEndX;
-+            exactY = exactEndY;
-+            includePoint(actualControl1X, actualControl1Y,
-+                         exactControl1X, exactControl1Y);
-+            includePoint(actualControl2X, actualControl2Y,
-+                         exactControl2X, exactControl2Y);
-+            includePoint(actualX, actualY, exactX, exactY);
-+            actualControlX = actualControl2X;
-+            actualControlY = actualControl2Y;
-+            exactControlX = exactControl2X;
-+            exactControlY = exactControl2Y;
-+        } else if(normalized == 'q' || normalized == 't') {
-+            const float actualStartX = actualX;
-+            const float actualStartY = actualY;
-+            const long double exactStartX = exactX;
-+            const long double exactStartY = exactY;
-+            const bool smooth = normalized == 't';
-+            const bool reflect = previousCommand == 'Q'
-+                || previousCommand == 'q' || previousCommand == 'T'
-+                || previousCommand == 't';
-+            const float actualQuadraticX = smooth
-+                ? (reflect ? 2.f * actualX - actualControlX : actualX)
-+                : actualCoordinate(0, actualX);
-+            const float actualQuadraticY = smooth
-+                ? (reflect ? 2.f * actualY - actualControlY : actualY)
-+                : actualCoordinate(1, actualY);
-+            const long double exactQuadraticX = smooth
-+                ? (reflect ? 2.0L * exactX - exactControlX : exactX)
-+                : exactCoordinate(0, exactX);
-+            const long double exactQuadraticY = smooth
-+                ? (reflect ? 2.0L * exactY - exactControlY : exactY)
-+                : exactCoordinate(1, exactY);
-+            const size_t endOffset = smooth ? 0 : 2;
-+            const float actualEndX = actualCoordinate(endOffset, actualX);
-+            const float actualEndY = actualCoordinate(endOffset + 1, actualY);
-+            const long double exactEndX = exactCoordinate(endOffset, exactX);
-+            const long double exactEndY = exactCoordinate(
-+                endOffset + 1, exactY);
-+            includeNonlinearSegment(
-+                exactStartX, exactStartY,
-+                {{exactQuadraticX, exactQuadraticY},
-+                 {exactEndX, exactEndY}});
-+            includeStrokeDirection(
-+                actualStartX, actualStartY, exactStartX, exactStartY,
-+                actualQuadraticX, actualQuadraticY,
-+                exactQuadraticX, exactQuadraticY,
-+                actualEndX, actualEndY);
-+            includeStrokeDirection(
-+                actualEndX, actualEndY, exactEndX, exactEndY,
-+                actualQuadraticX, actualQuadraticY,
-+                exactQuadraticX, exactQuadraticY,
-+                actualStartX, actualStartY);
-+            const float actualCubic1X = 2.f / 3.f * actualQuadraticX
-+                + 1.f / 3.f * actualX;
-+            const float actualCubic1Y = 2.f / 3.f * actualQuadraticY
-+                + 1.f / 3.f * actualY;
-+            const float actualCubic2X = 2.f / 3.f * actualQuadraticX
-+                + 1.f / 3.f * actualEndX;
-+            const float actualCubic2Y = 2.f / 3.f * actualQuadraticY
-+                + 1.f / 3.f * actualEndY;
-+            const long double exactCubic1X = 2.0L / 3.0L * exactQuadraticX
-+                + 1.0L / 3.0L * exactX;
-+            const long double exactCubic1Y = 2.0L / 3.0L * exactQuadraticY
-+                + 1.0L / 3.0L * exactY;
-+            const long double exactCubic2X = 2.0L / 3.0L * exactQuadraticX
-+                + 1.0L / 3.0L * exactEndX;
-+            const long double exactCubic2Y = 2.0L / 3.0L * exactQuadraticY
-+                + 1.0L / 3.0L * exactEndY;
-+            includePoint(actualCubic1X, actualCubic1Y,
-+                         exactCubic1X, exactCubic1Y);
-+            includePoint(actualCubic2X, actualCubic2Y,
-+                         exactCubic2X, exactCubic2Y);
-+            includePoint(actualEndX, actualEndY, exactEndX, exactEndY);
-+            actualControlX = actualQuadraticX;
-+            actualControlY = actualQuadraticY;
-+            exactControlX = exactQuadraticX;
-+            exactControlY = exactQuadraticY;
-+            actualX = actualEndX;
-+            actualY = actualEndY;
-+            exactX = exactEndX;
-+            exactY = exactEndY;
-+        } else if(normalized == 'a') {
-+            if(values[3].exact != 0.0L && values[3].exact != 1.0L)
-+                return std::numeric_limits<double>::infinity();
-+            if(values[4].exact != 0.0L && values[4].exact != 1.0L)
-+                return std::numeric_limits<double>::infinity();
-+            const float actualEndX = actualCoordinate(5, actualX);
-+            const float actualEndY = actualCoordinate(6, actualY);
-+            const long double exactEndX = exactCoordinate(5, exactX);
-+            const long double exactEndY = exactCoordinate(6, exactY);
-+            if(exactEndX != exactX || exactEndY != exactY)
-+                ++subpathNonzeroSegmentCount;
-+            const long double exactChord = std::hypot(
-+                exactEndX - exactX, exactEndY - exactY);
-+            const double actualChord = std::hypot(
-+                static_cast<double>(actualEndX - actualX),
-+                static_cast<double>(actualEndY - actualY));
-+            const long double endpointError = std::hypot(
-+                    static_cast<long double>(actualX) - exactX,
-+                    static_cast<long double>(actualY) - exactY)
-+                + std::hypot(
-+                    static_cast<long double>(actualEndX) - exactEndX,
-+                    static_cast<long double>(actualEndY) - exactEndY);
-+            const long double majorRadius = std::max(
-+                std::abs(values[0].exact), std::abs(values[1].exact));
-+            const long double minorRadius = std::min(
-+                std::abs(values[0].exact), std::abs(values[1].exact));
-+            if(exactChord > 0.0L && majorRadius > 0.0L) {
-+                if(actualChord == 0.0) {
-+                    return std::numeric_limits<double>::infinity();
-+                }
-+                const long double chordConditioningError =
-+                    majorRadius * endpointError / exactChord;
-+                maximumIsotropicError = std::max(
-+                    maximumIsotropicError, chordConditioningError);
-+                maximumError = std::max(
-+                    maximumError, chordConditioningError);
-+                if(minorRadius > 0.0L) {
-+                    const long double eccentricityConditioningError =
-+                        endpointError * majorRadius / minorRadius;
-+                    maximumIsotropicError = std::max(
-+                        maximumIsotropicError,
-+                        eccentricityConditioningError);
-+                    maximumError = std::max(
-+                        maximumError,
-+                        eccentricityConditioningError);
-+                }
-+            }
-+            actualX = actualEndX;
-+            actualY = actualEndY;
-+            exactX = exactEndX;
-+            exactY = exactEndY;
-+            includePoint(actualX, actualY, exactX, exactY);
-+        } else {
-+            return std::numeric_limits<double>::infinity();
-+        }
-+        previousCommand = command;
-+    }
-+    finishSubpath();
-+    const long double arcError = computeArcLoweringPrecisionError(value);
-+    maximumIsotropicError = std::max(maximumIsotropicError, arcError);
-+    maximumCoordinateErrorX = std::max(
-+        maximumCoordinateErrorX, maximumIsotropicError);
-+    maximumCoordinateErrorY = std::max(
-+        maximumCoordinateErrorY, maximumIsotropicError);
-+    maximumErrorX = static_cast<double>(maximumCoordinateErrorX);
-+    maximumErrorY = static_cast<double>(maximumCoordinateErrorY);
-+    return static_cast<double>(std::max({
-+        maximumError,
-+        maximumCoordinateErrorX,
-+        maximumCoordinateErrorY,
-+    }));
-+}
-+
-+struct TransformPrecisionEstimate {
-+    double linear{0};
-+    double translation{0};
-+};
-+
-+TransformPrecisionEstimate computeTransformPrecisionEstimate(
-+    std::string_view value)
-+{
-+    constexpr double OPERATION_ULPS = 4.0;
-+    constexpr double DEGREES_TO_RADIANS =
-+        3.141592653589793238462643383279502884 / 180.0;
-+    const double rounding = std::numeric_limits<float>::epsilon()
-+        * OPERATION_ULPS;
-+    TransformPrecisionEstimate estimate;
-+    size_t offset = 0;
-+    while(offset < value.size()) {
-+        while(offset < value.size()
-+                && !std::isalpha(static_cast<unsigned char>(value[offset])))
-+            ++offset;
-+        const size_t nameStart = offset;
-+        while(offset < value.size()
-+                && std::isalpha(static_cast<unsigned char>(value[offset])))
-+            ++offset;
-+        if(nameStart == offset)
-+            break;
-+        const auto name = value.substr(nameStart, offset - nameStart);
-+        const auto open = value.find('(', offset);
-+        if(open == std::string_view::npos)
-+            break;
-+        const auto close = value.find(')', open + 1);
-+        if(close == std::string_view::npos)
-+            break;
-+        const auto arguments = value.substr(open + 1, close - open - 1);
-+        const auto numbers = numericValues(arguments);
-+        double magnitude = 0;
-+        for(const double number : numbers)
-+            magnitude = std::max(magnitude, std::abs(number));
-+        if(name == "translate") {
-+            estimate.translation += magnitude * rounding;
-+        } else if(name == "scale") {
-+            estimate.linear += magnitude * rounding;
-+        } else if(name == "rotate") {
-+            const double angle = numbers.empty()
-+                ? 0 : std::abs(numbers.front());
-+            const double operationLinearError =
-+                angle * DEGREES_TO_RADIANS * rounding;
-+            estimate.linear += operationLinearError;
-+            if(numbers.size() == 3) {
-+                const double centerMagnitude = std::max(
-+                    std::abs(numbers[1]), std::abs(numbers[2]));
-+                estimate.translation += centerMagnitude
-+                    * (rounding + operationLinearError);
-+            }
-+        } else if(name == "skewX" || name == "skewY") {
-+            if(numbers.empty()) {
-+                estimate.linear = std::numeric_limits<double>::infinity();
-+            } else {
-+                constexpr float FLOAT_DEGREES_TO_RADIANS =
-+                    3.14159265358979323846f / 180.0f;
-+                const float actualDegrees =
-+                    static_cast<float>(numbers.front());
-+                const float actualRadians =
-+                    actualDegrees * FLOAT_DEGREES_TO_RADIANS;
-+                const float actualCoefficient = std::tan(actualRadians);
-+                const double exactRadians =
-+                    numbers.front() * DEGREES_TO_RADIANS;
-+                const double exactCoefficient = std::tan(exactRadians);
-+                if(!std::isfinite(actualCoefficient)
-+                        || !std::isfinite(exactCoefficient)
-+                        || std::signbit(actualCoefficient)
-+                            != std::signbit(exactCoefficient)) {
-+                    estimate.linear =
-+                        std::numeric_limits<double>::infinity();
-+                } else {
-+                    estimate.linear += std::abs(
-+                        static_cast<double>(actualCoefficient)
-+                            - exactCoefficient);
-+                }
-+            }
-+        } else if(name == "matrix") {
-+            for(size_t numberIndex = 0;
-+                    numberIndex < numbers.size(); ++numberIndex) {
-+                const double parsed = numbers[numberIndex];
-+                if(numberIndex < 4)
-+                    estimate.linear += std::abs(parsed) * rounding;
-+                else if(numberIndex < 6)
-+                    estimate.translation += std::abs(parsed) * rounding;
-+            }
-+        }
-+        offset = close + 1;
-+    }
-+    return estimate;
-+}
-+
-+} // namespace
++namespace recorder = lumina_svg_core::recorder;
++using recorder::computePathInputPrecisionError;
++using recorder::computePathParseWork;
++using recorder::computePointListParseWork;
++using recorder::computeRelativePathOperationCount;
++using recorder::computeSourceSubpathAreaPotential;
++using recorder::computeTransformOperationCount;
++using recorder::computeTransformPrecisionEstimate;
++using recorder::exactRecordingLength;
++using recorder::exactRecordingNumber;
++using recorder::recordingLengthTokens;
 +
  ElementID elementid(std::string_view name)
  {
      static const struct {
-@@ -126,6 +1532,7 @@ std::unique_ptr<SVGElement> SVGElement::create(Document* document, ElementID id)
+@@ -126,6 +146,7 @@ std::unique_ptr<SVGElement> SVGElement::create(Document* document, ElementID id)
  SVGElement::SVGElement(Document* document, ElementID id)
      : SVGNode(document)
      , m_id(id)
@@ -2294,7 +904,7 @@ index 7d62cc6..90a5554 100644
  {
  }
  
-@@ -215,59 +1622,132 @@ bool SVGElement::setAttribute(const Attribute& attribute)
+@@ -215,59 +236,132 @@ bool SVGElement::setAttribute(const Attribute& attribute)
      return setAttribute(attribute.specificity(), attribute.id(), attribute.value());
  }
  
@@ -2462,7 +1072,7 @@ index 7d62cc6..90a5554 100644
      m_children.push_back(std::move(child));
      return &*m_children.back();
  }
-@@ -428,14 +1908,32 @@ Size SVGElement::currentViewportSize() const
+@@ -428,14 +522,32 @@ Size SVGElement::currentViewportSize() const
  void SVGElement::cloneChildren(SVGElement* parentElement) const
  {
      for(const auto& child : m_children) {
@@ -2495,7 +1105,7 @@ index 7d62cc6..90a5554 100644
      if(deep) { cloneChildren(element.get()); }
      return element;
  }
-@@ -455,6 +1953,13 @@ void SVGElement::layoutElement(const SVGLayoutState& state)
+@@ -455,6 +567,13 @@ void SVGElement::layoutElement(const SVGLayoutState& state)
      m_clipper = getClipper(state.clip_path());
      m_masker = getMasker(state.mask());
      m_opacity = state.opacity();
@@ -2509,7 +1119,7 @@ index 7d62cc6..90a5554 100644
  
      m_font_size = state.font_size();
      m_display = state.display();
-@@ -596,28 +2101,56 @@ SVGGraphicsElement::SVGGraphicsElement(Document* document, ElementID id)
+@@ -596,28 +715,56 @@ SVGGraphicsElement::SVGGraphicsElement(Document* document, ElementID id)
      addProperty(m_transform);
  }
  
@@ -2537,7 +1147,7 @@ index 7d62cc6..90a5554 100644
 +        state.stroke_width(), LengthDirection::Diagonal);
 +    StrokeData strokeData(static_cast<float>(resolvedWidth));
 +    strokeData.setRecordingLineWidth(exactRecordingLength(
-+        state.stroke_width_source(), state.stroke_width(), resolvedWidth));
++        state.stroke_width_source(), state.stroke_width().value(), resolvedWidth));
      strokeData.setMiterLimit(state.stroke_miterlimit());
 +    strokeData.setRecordingMiterLimit(exactRecordingNumber(
 +        state.stroke_miterlimit_source(), state.stroke_miterlimit()));
@@ -2548,7 +1158,7 @@ index 7d62cc6..90a5554 100644
 +        state.stroke_dashoffset(), LengthDirection::Diagonal);
 +    strokeData.setDashOffset(static_cast<float>(resolvedDashOffset));
 +    strokeData.setRecordingDashOffset(exactRecordingLength(
-+        state.stroke_dashoffset_source(), state.stroke_dashoffset(),
++        state.stroke_dashoffset_source(), state.stroke_dashoffset().value(),
 +        resolvedDashOffset));
  
      DashArray dashArray;
@@ -2566,7 +1176,7 @@ index 7d62cc6..90a5554 100644
 +            dash, LengthDirection::Diagonal);
 +        dashArray.push_back(static_cast<float>(resolved));
 +        recordingDashArray.push_back(index < dashTokens.size()
-+            ? exactRecordingLength(dashTokens[index], dash, resolved)
++            ? exactRecordingLength(dashTokens[index], dash.value(), resolved)
 +            : resolved);
 +    }
      strokeData.setDashArray(std::move(dashArray));
@@ -2574,7 +1184,7 @@ index 7d62cc6..90a5554 100644
      return strokeData;
  }
  
-@@ -646,7 +2179,8 @@ Transform SVGSVGElement::localTransform() const
+@@ -646,7 +793,8 @@ Transform SVGSVGElement::localTransform() const
      };
  
      if(isRootElement())
@@ -2584,7 +1194,7 @@ index 7d62cc6..90a5554 100644
      return SVGGraphicsElement::localTransform() * Transform::translated(viewportRect.x, viewportRect.y) * viewBoxToViewTransform(viewportRect.size());
  }
  
-@@ -665,9 +2199,22 @@ void SVGSVGElement::render(SVGRenderState& state) const
+@@ -665,9 +813,22 @@ void SVGSVGElement::render(SVGRenderState& state) const
      SVGBlendInfo blendInfo(this);
      SVGRenderState newState(this, state, localTransform());
      newState.beginGroup(blendInfo);
@@ -2609,7 +1219,7 @@ index 7d62cc6..90a5554 100644
      newState.endGroup(blendInfo);
  }
  
-@@ -691,9 +2238,9 @@ SVGElement* SVGRootElement::getElementById(std::string_view id) const
+@@ -691,9 +852,9 @@ SVGElement* SVGRootElement::getElementById(std::string_view id) const
      return it->second;
  }
  
@@ -2621,7 +1231,7 @@ index 7d62cc6..90a5554 100644
  }
  
  void SVGRootElement::layout(SVGLayoutState& state)
-@@ -782,13 +2329,16 @@ void SVGUseElement::render(SVGRenderState& state) const
+@@ -782,13 +943,16 @@ void SVGUseElement::render(SVGRenderState& state) const
  
  void SVGUseElement::build()
  {
@@ -2639,7 +1249,7 @@ index 7d62cc6..90a5554 100644
  }
  
  inline bool isDisallowedElement(const SVGElement* element)
-@@ -833,10 +2383,16 @@ std::unique_ptr<SVGElement> SVGUseElement::cloneTargetElement(SVGElement* target
+@@ -833,10 +997,16 @@ std::unique_ptr<SVGElement> SVGUseElement::cloneTargetElement(SVGElement* target
      }
  
      auto newElement = SVGElement::create(document(), tagId);
@@ -2656,7 +1266,7 @@ index 7d62cc6..90a5554 100644
                  newElement->setAttribute(attribute);
              }
          }
-@@ -1016,9 +2572,22 @@ void SVGMarkerElement::renderMarker(SVGRenderState& state, const Point& origin,
+@@ -1016,9 +1186,22 @@ void SVGMarkerElement::renderMarker(SVGRenderState& state, const Point& origin,
      SVGBlendInfo blendInfo(this);
      SVGRenderState newState(this, state, markerTransform(origin, angle, strokeWidth));
      newState.beginGroup(blendInfo);
@@ -2681,7 +1291,7 @@ index 7d62cc6..90a5554 100644
      newState.endGroup(blendInfo);
  }
  
-@@ -1078,29 +2647,66 @@ inline const SVGGeometryElement* toSVGGeometryElement(const SVGNode* node)
+@@ -1078,29 +1261,66 @@ inline const SVGGeometryElement* toSVGGeometryElement(const SVGNode* node)
  
  void SVGClipPathElement::applyClipPath(SVGRenderState& state) const
  {
@@ -2766,7 +1376,7 @@ index 7d62cc6..90a5554 100644
          return;
      }
  
-@@ -1222,4 +2828,247 @@ void SVGMaskElement::layoutElement(const SVGLayoutState& state)
+@@ -1222,4 +1442,247 @@ void SVGMaskElement::layoutElement(const SVGLayoutState& state)
      SVGElement::layoutElement(state);
  }
  
@@ -3271,74 +1881,31 @@ index e2c9708..d2dc5ee 100644
          }
      }
 diff --git a/source/svglayoutstate.cpp b/source/svglayoutstate.cpp
-index bf5b92d..9f591c1 100644
+index bf5b92d..b6793dd 100644
 --- a/source/svglayoutstate.cpp
 +++ b/source/svglayoutstate.cpp
-@@ -2,7 +2,13 @@
+@@ -1,8 +1,12 @@
+ #include "svglayoutstate.h"
  #include "svgelement.h"
  #include "svgparserutils.h"
++#include "lumina_svg_core/recorder/alpha.h"
  
 +#include <algorithm>
-+#include <cerrno>
 +#include <cmath>
-+#include <cstdint>
-+#include <cstdlib>
  #include <optional>
 +#include <string>
  
  namespace lunasvg {
  
-@@ -110,6 +116,238 @@ static float parseNumberOrPercentage(std::string_view input, bool allowPercentag
+@@ -110,6 +114,58 @@ static float parseNumberOrPercentage(std::string_view input, bool allowPercentag
      return value;
  }
  
-+static double parseRecordingNumberOrPercentage(
-+    std::string_view input, bool allowPercentage, double defaultValue)
-+{
-+    stripLeadingAndTrailingSpaces(input);
-+    bool percentage = false;
-+    if(allowPercentage && !input.empty() && input.back() == '%') {
-+        percentage = true;
-+        input.remove_suffix(1);
-+        stripLeadingAndTrailingSpaces(input);
-+    }
-+    if(input.empty())
-+        return defaultValue;
-+    std::string source(input);
-+    char* parsedEnd = nullptr;
-+    errno = 0;
-+    const double parsed = std::strtod(source.c_str(), &parsedEnd);
-+    if(parsedEnd != source.c_str() + source.size()
-+            || !std::isfinite(parsed))
-+        return defaultValue;
-+    double value = percentage ? parsed / 100.0 : parsed;
-+    return std::clamp(value, 0.0, 1.0);
-+}
-+
-+static uint8_t recordingHexDigit(char value)
-+{
-+    if(value >= '0' && value <= '9')
-+        return static_cast<uint8_t>(value - '0');
-+    if(value >= 'a' && value <= 'f')
-+        return static_cast<uint8_t>(10 + value - 'a');
-+    return static_cast<uint8_t>(10 + value - 'A');
-+}
-+
-+static bool recordingAsciiEqualsIgnoreCase(
-+    std::string_view left, std::string_view right)
-+{
-+    if(left.size() != right.size())
-+        return false;
-+    for(size_t index = 0; index < left.size(); ++index) {
-+        const auto lower = [](char value) {
-+            return value >= 'A' && value <= 'Z'
-+                ? static_cast<char>(value + ('a' - 'A')) : value;
-+        };
-+        if(lower(left[index]) != lower(right[index]))
-+            return false;
-+    }
-+    return true;
-+}
++namespace recorder = lumina_svg_core::recorder;
++using recorder::AlphaSemantics;
++using recorder::numberAlphaSemantics;
++using recorder::parseRecordingNumberOrPercentage;
++using recorder::recordingAsciiEqualsIgnoreCase;
 +
 +static double recordingColorAlpha(
 +    std::string_view input, const SVGLayoutState* state)
@@ -3346,47 +1913,11 @@ index bf5b92d..9f591c1 100644
 +    stripLeadingAndTrailingSpaces(input);
 +    if(recordingAsciiEqualsIgnoreCase(input, "currentColor"))
 +        return state->recording_color_alpha();
-+
-+    plutovg_color_t parsedColor;
++    plutovg_color_t color{};
 +    const int consumed = plutovg_color_parse(
-+        &parsedColor, input.data(), static_cast<int>(input.size()));
-+    if(consumed != static_cast<int>(input.size()))
-+        return 1.0;
-+
-+    if(!input.empty() && input.front() == '#') {
-+        const auto digits = input.substr(1);
-+        if(digits.size() == 4)
-+            return recordingHexDigit(digits[3]) / 15.0;
-+        if(digits.size() == 8) {
-+            const uint8_t alpha = static_cast<uint8_t>(
-+                recordingHexDigit(digits[6]) * 16
-+                + recordingHexDigit(digits[7]));
-+            return alpha / 255.0;
-+        }
-+        return 1.0;
-+    }
-+
-+    const auto open = input.find('(');
-+    const auto close = input.rfind(')');
-+    if(open != std::string_view::npos && close == input.size() - 1) {
-+        const auto functionName = input.substr(0, open);
-+        if(recordingAsciiEqualsIgnoreCase(functionName, "rgb")
-+                || recordingAsciiEqualsIgnoreCase(functionName, "rgba")
-+                || recordingAsciiEqualsIgnoreCase(functionName, "hsl")
-+                || recordingAsciiEqualsIgnoreCase(functionName, "hsla")) {
-+            const auto arguments = input.substr(
-+                open + 1, close - open - 1);
-+            const auto commaCount = static_cast<size_t>(std::count(
-+                arguments.begin(), arguments.end(), ','));
-+            if(commaCount == 3) {
-+                const auto alphaStart = arguments.rfind(',');
-+                return parseRecordingNumberOrPercentage(
-+                    arguments.substr(alphaStart + 1), true,
-+                    static_cast<double>(parsedColor.a));
-+            }
-+        }
-+    }
-+    return std::clamp(static_cast<double>(parsedColor.a), 0.0, 1.0);
++        &color, input.data(), static_cast<int>(input.size()));
++    return recorder::recordingColorAlpha(input,
++        consumed == static_cast<int>(input.size()), color.a);
 +}
 +
 +static double recordingPaintAlpha(
@@ -3398,121 +1929,19 @@ index bf5b92d..9f591c1 100644
 +    return recordingColorAlpha(input, state);
 +}
 +
-+struct AlphaSemantics {
-+    bool zero{false};
-+    bool partial{false};
-+};
-+
-+static bool isSourcePartialAlpha(std::string_view value)
-+{
-+    stripLeadingAndTrailingSpaces(value);
-+    bool percentage = false;
-+    if(!value.empty() && value.back() == '%') {
-+        percentage = true;
-+        value.remove_suffix(1);
-+    }
-+    bool negative = false;
-+    if(!value.empty() && (value.front() == '+' || value.front() == '-')) {
-+        negative = value.front() == '-';
-+        value.remove_prefix(1);
-+    }
-+    std::string digits;
-+    size_t fractionDigits = 0;
-+    bool foundDigit = false;
-+    while(!value.empty() && value.front() >= '0' && value.front() <= '9') {
-+        digits.push_back(value.front());
-+        value.remove_prefix(1);
-+        foundDigit = true;
-+    }
-+    if(!value.empty() && value.front() == '.') {
-+        value.remove_prefix(1);
-+        while(!value.empty() && value.front() >= '0' && value.front() <= '9') {
-+            digits.push_back(value.front());
-+            value.remove_prefix(1);
-+            ++fractionDigits;
-+            foundDigit = true;
-+        }
-+    }
-+    int exponentSign = 1;
-+    int64_t exponent = 0;
-+    if(!value.empty() && (value.front() == 'e' || value.front() == 'E')) {
-+        value.remove_prefix(1);
-+        if(!value.empty() && (value.front() == '+' || value.front() == '-')) {
-+            exponentSign = value.front() == '-' ? -1 : 1;
-+            value.remove_prefix(1);
-+        }
-+        bool foundExponentDigit = false;
-+        while(!value.empty() && value.front() >= '0' && value.front() <= '9') {
-+            exponent = std::min<int64_t>(
-+                1000000000,
-+                exponent * 10 + (value.front() - '0'));
-+            value.remove_prefix(1);
-+            foundExponentDigit = true;
-+        }
-+        if(!foundExponentDigit)
-+            return false;
-+    }
-+    if(!foundDigit || !value.empty() || negative)
-+        return false;
-+    const auto firstNonZero = digits.find_first_not_of('0');
-+    if(firstNonZero == std::string::npos)
-+        return false;
-+    digits.erase(0, firstNonZero);
-+    int64_t scale = exponentSign * exponent
-+        - static_cast<int64_t>(fractionDigits);
-+    while(digits.size() > 1 && digits.back() == '0') {
-+        digits.pop_back();
-+        ++scale;
-+    }
-+    const std::string_view threshold = percentage ? "100" : "1";
-+    const int64_t decimalDigits = static_cast<int64_t>(digits.size()) + scale;
-+    if(decimalDigits != static_cast<int64_t>(threshold.size()))
-+        return decimalDigits < static_cast<int64_t>(threshold.size());
-+    const size_t comparisonDigits = std::max(digits.size(), threshold.size());
-+    for(size_t index = 0; index < comparisonDigits; ++index) {
-+        const char digit = index < digits.size() ? digits[index] : '0';
-+        const char thresholdDigit = index < threshold.size()
-+            ? threshold[index] : '0';
-+        if(digit != thresholdDigit)
-+            return digit < thresholdDigit;
-+    }
-+    return false;
-+}
-+
-+static AlphaSemantics numberAlphaSemantics(std::string_view input)
-+{
-+    if(isSourcePartialAlpha(input))
-+        return {false, true};
-+    const float parsed = parseNumberOrPercentage(input, true, 1.f);
-+    return {parsed <= 0.f, false};
-+}
-+
 +static AlphaSemantics colorAlphaSemantics(
 +    std::string_view input, const SVGLayoutState* state)
 +{
 +    stripLeadingAndTrailingSpaces(input);
-+    if(recordingAsciiEqualsIgnoreCase(input, "currentColor"))
-+        return {state->color_alpha_zero(), state->color_alpha_partial()};
-+    const auto open = input.find('(');
-+    const auto close = input.rfind(')');
-+    const auto comma = input.rfind(',');
-+    if(open != std::string_view::npos && close == input.size() - 1
-+            && comma != std::string_view::npos && comma > open) {
-+        const auto functionName = input.substr(0, open);
-+        if(recordingAsciiEqualsIgnoreCase(functionName, "rgba")
-+                || recordingAsciiEqualsIgnoreCase(functionName, "hsla"))
-+            return numberAlphaSemantics(
-+                input.substr(comma + 1, close - comma - 1));
-+    }
-+    plutovg_color_t parsedColor;
++    if(const auto alpha = recorder::sourceColorAlphaSemantics(input,
++            {state->color_alpha_zero(), state->color_alpha_partial()}))
++        return *alpha;
++    plutovg_color_t color{};
 +    const int consumed = plutovg_color_parse(
-+        &parsedColor, input.data(), static_cast<int>(input.size()));
++        &color, input.data(), static_cast<int>(input.size()));
 +    if(consumed != static_cast<int>(input.size()))
 +        return {};
-+    return {
-+        parsedColor.a <= 0.f,
-+        parsedColor.a > 0.f && parsedColor.a < 1.f,
-+    };
++    return {color.a <= 0.f, color.a > 0.f && color.a < 1.f};
 +}
 +
 +static AlphaSemantics paintAlphaSemantics(
@@ -3527,7 +1956,7 @@ index bf5b92d..9f591c1 100644
  static Length parseLength(std::string_view input, LengthNegativeMode mode, const Length& defaultValue)
  {
      Length value;
-@@ -413,13 +651,32 @@ SVGLayoutState::SVGLayoutState(const SVGLayoutState& parent, const SVGElement* e
+@@ -413,13 +469,32 @@ SVGLayoutState::SVGLayoutState(const SVGLayoutState& parent, const SVGElement* e
      , m_color(parent.color())
      , m_fill_opacity(parent.fill_opacity())
      , m_stroke_opacity(parent.stroke_opacity())
@@ -3560,7 +1989,7 @@ index bf5b92d..9f591c1 100644
      , m_stroke_linecap(parent.stroke_linecap())
      , m_stroke_linejoin(parent.stroke_linejoin())
      , m_fill_rule(parent.fill_rule())
-@@ -440,6 +697,19 @@ SVGLayoutState::SVGLayoutState(const SVGLayoutState& parent, const SVGElement* e
+@@ -440,6 +515,19 @@ SVGLayoutState::SVGLayoutState(const SVGLayoutState& parent, const SVGElement* e
      , m_marker_end(parent.marker_end())
      , m_font_family(parent.font_family())
  {
@@ -3580,7 +2009,7 @@ index bf5b92d..9f591c1 100644
      for(const auto& attribute : element->attributes()) {
          std::string_view input(attribute.value());
          stripLeadingAndTrailingSpaces(input);
-@@ -448,30 +718,58 @@ SVGLayoutState::SVGLayoutState(const SVGLayoutState& parent, const SVGElement* e
+@@ -448,30 +536,58 @@ SVGLayoutState::SVGLayoutState(const SVGLayoutState& parent, const SVGElement* e
          switch(attribute.id()) {
          case PropertyID::Fill:
              m_fill = parsePaint(input, this, Color::Black);
@@ -3640,7 +2069,7 @@ index bf5b92d..9f591c1 100644
              break;
          case PropertyID::Font_Size:
              m_font_size = parseFontSize(input, this);
-@@ -487,12 +785,15 @@ SVGLayoutState::SVGLayoutState(const SVGLayoutState& parent, const SVGElement* e
+@@ -487,12 +603,15 @@ SVGLayoutState::SVGLayoutState(const SVGLayoutState& parent, const SVGElement* e
              break;
          case PropertyID::Stroke_Width:
              m_stroke_width = parseLength(input, LengthNegativeMode::Forbid, Length(1.f, LengthUnits::None));
@@ -3760,11 +2189,14 @@ index 4d08ad9..d8caeb5 100644
      LineCap m_stroke_linecap = LineCap::Butt;
      LineJoin m_stroke_linejoin = LineJoin::Miter;
 diff --git a/source/svgparser.cpp b/source/svgparser.cpp
-index 183937c..94f0f49 100644
+index 183937c..a525afb 100644
 --- a/source/svgparser.cpp
 +++ b/source/svgparser.cpp
-@@ -3,9 +3,464 @@
+@@ -1,11 +1,100 @@
+ #include "lunasvg.h"
+ #include "svgelement.h"
  #include "svgparserutils.h"
++#include "lumina_svg_core/recorder/capability.h"
  
  #include <cassert>
 +#include <cctype>
@@ -3779,11 +2211,8 @@ index 183937c..94f0f49 100644
  
  namespace lunasvg {
  
-+static bool hasPrefix(std::string_view value, std::string_view prefix)
-+{
-+    return value.size() >= prefix.size()
-+        && value.substr(0, prefix.size()) == prefix;
-+}
++namespace recorder = lumina_svg_core::recorder;
++using recorder::hasPrefix;
 +
 +static void lowercaseAscii(std::string& value)
 +{
@@ -3793,245 +2222,10 @@ index 183937c..94f0f49 100644
 +    }
 +}
 +
-+static std::string_view::size_type findUrlFunction(std::string_view value)
-+{
-+    for(size_t index = 0; index + 4 <= value.size(); ++index) {
-+        if((value[index] == 'u' || value[index] == 'U')
-+                && (value[index + 1] == 'r' || value[index + 1] == 'R')
-+                && (value[index + 2] == 'l' || value[index + 2] == 'L')
-+                && value[index + 3] == '(')
-+            return index;
-+    }
-+    return std::string_view::npos;
-+}
-+
-+static std::string_view trimmedValue(std::string_view value)
-+{
-+    auto first = value.find_first_not_of(" \t\r\n");
-+    if(first == std::string_view::npos)
-+        return {};
-+    auto last = value.find_last_not_of(" \t\r\n");
-+    return value.substr(first, last - first + 1);
-+}
-+
-+static bool parseNumberValue(std::string_view value, bool allowPercentage,
-+                             float& parsed)
-+{
-+    value = trimmedValue(value);
-+    if(value.empty() || !parseNumber(value, parsed) || !std::isfinite(parsed))
-+        return false;
-+    if(allowPercentage && skipDelimiter(value, '%'))
-+        parsed /= 100.f;
-+    return value.empty();
-+}
-+
-+static bool isPartialAlphaValue(std::string_view value, bool allowPercentage)
-+{
-+    value = trimmedValue(value);
-+    bool percentage = false;
-+    if(allowPercentage && !value.empty() && value.back() == '%') {
-+        percentage = true;
-+        value.remove_suffix(1);
-+    }
-+    bool negative = false;
-+    if(!value.empty() && (value.front() == '+' || value.front() == '-')) {
-+        negative = value.front() == '-';
-+        value.remove_prefix(1);
-+    }
-+    std::string digits;
-+    size_t fractionDigits = 0;
-+    bool foundDigit = false;
-+    while(!value.empty() && IS_NUM(value.front())) {
-+        digits.push_back(value.front());
-+        value.remove_prefix(1);
-+        foundDigit = true;
-+    }
-+    if(!value.empty() && value.front() == '.') {
-+        value.remove_prefix(1);
-+        while(!value.empty() && IS_NUM(value.front())) {
-+            digits.push_back(value.front());
-+            value.remove_prefix(1);
-+            ++fractionDigits;
-+            foundDigit = true;
-+        }
-+    }
-+    int exponentSign = 1;
-+    int64_t exponent = 0;
-+    if(!value.empty() && (value.front() == 'e' || value.front() == 'E')) {
-+        value.remove_prefix(1);
-+        if(!value.empty() && (value.front() == '+' || value.front() == '-')) {
-+            exponentSign = value.front() == '-' ? -1 : 1;
-+            value.remove_prefix(1);
-+        }
-+        while(!value.empty() && IS_NUM(value.front())) {
-+            exponent = std::min<int64_t>(
-+                1000000000,
-+                exponent * 10 + (value.front() - '0'));
-+            value.remove_prefix(1);
-+        }
-+    }
-+    if(!foundDigit || !value.empty() || negative)
-+        return false;
-+    const auto firstNonZero = digits.find_first_not_of('0');
-+    if(firstNonZero == std::string::npos)
-+        return false;
-+    digits.erase(0, firstNonZero);
-+    int64_t scale = exponentSign * exponent
-+        - static_cast<int64_t>(fractionDigits);
-+    while(digits.size() > 1 && digits.back() == '0') {
-+        digits.pop_back();
-+        ++scale;
-+    }
-+    const std::string_view threshold = percentage ? "100" : "1";
-+    const int64_t decimalDigits = static_cast<int64_t>(digits.size()) + scale;
-+    if(decimalDigits != static_cast<int64_t>(threshold.size()))
-+        return decimalDigits < static_cast<int64_t>(threshold.size());
-+    const size_t comparisonDigits = std::max(digits.size(), threshold.size());
-+    for(size_t index = 0; index < comparisonDigits; ++index) {
-+        const char digit = index < digits.size() ? digits[index] : '0';
-+        const char thresholdDigit = index < threshold.size()
-+            ? threshold[index] : '0';
-+        if(digit != thresholdDigit)
-+            return digit < thresholdDigit;
-+    }
-+    return false;
-+}
-+
-+static bool isValidLengthValue(std::string_view value,
-+                               LengthNegativeMode negativeMode)
-+{
-+    Length length;
-+    return length.parse(value, negativeMode);
-+}
-+
-+static bool isValidDashArray(std::string_view value)
-+{
-+    value = trimmedValue(value);
-+    if(value == "none")
-+        return true;
-+    bool foundLength = false;
-+    while(!value.empty()) {
-+        size_t count = 0;
-+        while(count < value.size() && value[count] != ',' && !IS_WS(value[count]))
-+            ++count;
-+        if(count == 0 || !isValidLengthValue(
-+                value.substr(0, count), LengthNegativeMode::Forbid))
-+            return false;
-+        foundLength = true;
-+        value.remove_prefix(count);
-+        if(value.empty())
-+            break;
-+        if(!skipOptionalSpacesOrComma(value))
-+            return false;
-+    }
-+    return foundLength;
-+}
-+
-+static bool containsUnstableFloatNumber(std::string_view value)
-+{
-+    while(!value.empty()) {
-+        const char first = value.front();
-+        if(!IS_NUM(first) && first != '+' && first != '-' && first != '.') {
-+            value.remove_prefix(1);
-+            continue;
-+        }
-+        auto remaining = value;
-+        double number = 0.0;
-+        if(!parseNumber(remaining, number)) {
-+            value.remove_prefix(1);
-+            continue;
-+        }
-+        const size_t consumed = value.size() - remaining.size();
-+        if(consumed == 0) {
-+            value.remove_prefix(1);
-+            continue;
-+        }
-+        if(std::isfinite(number) && number != 0.0) {
-+            const double magnitude = std::abs(number);
-+            if(magnitude < std::numeric_limits<float>::min()
-+                    || magnitude > std::numeric_limits<float>::max())
-+                return true;
-+        }
-+        value.remove_prefix(consumed);
-+    }
-+    return false;
-+}
-+
-+static bool isFloatGeometryAttribute(std::string_view name)
-+{
-+    return name == "d" || name == "points" || name == "transform"
-+        || name == "viewBox" || name == "x" || name == "y"
-+        || name == "x1" || name == "y1" || name == "x2" || name == "y2"
-+        || name == "cx" || name == "cy" || name == "r"
-+        || name == "rx" || name == "ry" || name == "width"
-+        || name == "height" || name == "dx" || name == "dy"
-+        || name == "stroke-width" || name == "stroke-dasharray"
-+        || name == "stroke-dashoffset" || name == "stroke-miterlimit";
-+}
-+
-+static bool isValidLocalUrl(std::string_view value)
-+{
-+    value = trimmedValue(value);
-+    if(value == "none")
-+        return true;
-+    if(!skipString(value, "url") || !skipOptionalSpaces(value)
-+            || !skipDelimiter(value, '(') || !skipOptionalSpaces(value))
-+        return false;
-+    char quote = 0;
-+    if(!value.empty() && (value.front() == '\'' || value.front() == '"')) {
-+        quote = value.front();
-+        value.remove_prefix(1);
-+        skipOptionalSpaces(value);
-+    }
-+    if(!skipDelimiter(value, '#'))
-+        return false;
-+    size_t identifierLength = 0;
-+    while(identifierLength < value.size()
-+            && value[identifierLength] != ')'
-+            && (quote == 0 || value[identifierLength] != quote))
-+        ++identifierLength;
-+    if(identifierLength == 0)
-+        return false;
-+    value.remove_prefix(identifierLength);
-+    skipOptionalSpaces(value);
-+    if(quote != 0 && !skipDelimiter(value, quote))
-+        return false;
-+    skipOptionalSpaces(value);
-+    if(!skipDelimiter(value, ')'))
-+        return false;
-+    skipOptionalSpaces(value);
-+    return value.empty();
-+}
-+
-+static bool matchesAny(std::string_view value, std::string_view first,
-+                       std::string_view second = {}, std::string_view third = {})
-+{
-+    return value == first || (!second.empty() && value == second)
-+        || (!third.empty() && value == third);
-+}
-+
-+static bool isUnimplementedGeometryCssProperty(std::string_view name)
-+{
-+    return name == "transform" || name == "transform-origin"
-+        || name == "transform-box" || name == "translate"
-+        || name == "rotate" || name == "scale" || name == "x"
-+        || name == "y" || name == "cx" || name == "cy" || name == "r"
-+        || name == "rx" || name == "ry" || name == "width"
-+        || name == "height" || name == "d" || name == "points"
-+        || name == "clip" || name == "marker"
-+        || name == "stroke-alignment" || hasPrefix(name, "offset-")
-+        || hasPrefix(name, "motion-");
-+}
-+
 +static bool isDeferredCssCapabilityProperty(std::string_view name)
 +{
-+    return csspropertyid(name) != PropertyID::Unknown
-+        || isUnimplementedGeometryCssProperty(name)
-+        || name == "all"
-+        || name == "filter" || name == "backdrop-filter"
-+        || name == "paint-order" || name == "mask"
-+        || name == "mix-blend-mode" || name == "isolation"
-+        || name == "color-interpolation";
++    return recorder::isDeferredCssCapabilityProperty(
++        name, csspropertyid(name) != PropertyID::Unknown);
 +}
 +
 +static bool isDeferredRenderCapabilityProperty(std::string_view name)
@@ -4044,146 +2238,17 @@ index 183937c..94f0f49 100644
 +static std::string capabilityReasonForAttribute(
 +    std::string_view name, std::string_view value, bool known,
 +    ElementID elementId = ElementID::Unknown,
-+    bool isRootElement = false,
-+    bool cssDeclaration = false)
++    bool /*isRootElement*/ = false, bool cssDeclaration = false)
 +{
-+    if(elementId == ElementID::Style) {
-+        const auto styleValue = trimmedValue(value);
-+        if(name == "media" && !styleValue.empty() && styleValue != "all")
-+            return "unsupported_css_media";
-+        if(name == "type" && !styleValue.empty()
-+                && styleValue != "text/css")
-+            return "unsupported_css_type";
-+        if(name == "scoped")
-+            return "unsupported_css_scope";
-+    }
-+    if(name == "requiredExtensions" || name == "requiredFeatures"
-+            || name == "systemLanguage")
-+        return "unsupported_conditional_processing";
-+    if(name == "pathLength")
-+        return "unsupported_path_length";
-+    if(elementId == ElementID::Image
-+            && (name == "href" || name == "xlink:href"))
-+        return "unsupported_image";
-+    if(name == "xml:base")
-+        return "unsupported_external_resource";
-+    if(cssDeclaration && !known
-+            && (isUnimplementedGeometryCssProperty(name)
-+                || name == "all"))
-+        return "unsupported_css_property";
-+    const auto normalizedValue = trimmedValue(value);
-+    if(known && normalizedValue == "inherit")
-+        return {};
-+    auto firstValueCharacter = value.find_first_not_of(" \t\r\n");
-+    if((name == "href" || name == "xlink:href")
-+            && firstValueCharacter != std::string_view::npos
-+            && value[firstValueCharacter] != '#')
-+        return "unsupported_external_resource";
-+    auto urlPosition = findUrlFunction(value);
-+    if(urlPosition != std::string_view::npos) {
-+        auto urlValue = value.find_first_not_of(" \t\r\n'\"", urlPosition + 4);
-+        if(urlValue != std::string_view::npos && value[urlValue] != '#')
-+            return "unsupported_external_resource";
-+    }
-+    if(isFloatGeometryAttribute(name)
-+            && containsUnstableFloatNumber(value))
-+        return "unsupported_input_precision";
-+    const bool isPaintColor = name == "fill" || name == "stroke"
-+        || name == "color" || name == "stop-color"
-+        || name == "flood-color" || name == "lighting-color";
-+    if(isPaintColor) {
-+        if(urlPosition != std::string_view::npos)
-+            return "unsupported_paint_server";
-+        if(normalizedValue.empty())
-+            return "unsupported_color_syntax";
-+        const auto colorValue = normalizedValue;
-+        if((name == "fill" || name == "stroke") && colorValue == "none")
-+            return {};
-+        if(colorValue == "currentColor")
-+            return {};
-+        if(colorValue.size()
-+                > static_cast<size_t>(std::numeric_limits<int>::max()))
-+            return "unsupported_color_syntax";
-+        plutovg_color_t parsedColor;
-+        const auto consumed = plutovg_color_parse(
-+            &parsedColor, colorValue.data(), static_cast<int>(colorValue.size()));
-+        if(consumed != static_cast<int>(colorValue.size()))
-+            return "unsupported_color_syntax";
-+    }
-+    if(name == "vector-effect")
-+        return matchesAny(normalizedValue, "none", "non-scaling-stroke") ? std::string{} : "unsupported_vector_effect";
-+    if(name == "paint-order")
-+        return normalizedValue == "normal"
-+            ? std::string{} : "unsupported_paint_order";
-+    if(name == "filter" || name == "backdrop-filter")
-+        return normalizedValue == "none"
-+            ? std::string{} : "unsupported_filter";
-+    if(name == "mask")
-+        return normalizedValue == "none"
-+            ? std::string{} : "unsupported_mask";
-+    if(name == "mix-blend-mode")
-+        return normalizedValue == "normal"
-+            ? std::string{} : "unsupported_blend_mode";
-+    if(name == "isolation")
-+        return normalizedValue == "auto"
-+            ? std::string{} : "unsupported_blend_mode";
-+    if(name == "color-interpolation")
-+        return normalizedValue == "sRGB"
-+            ? std::string{} : "unsupported_color_interpolation";
-+    if(hasPrefix(name, "on"))
-+        return "unsupported_script";
-+    if(name == "clip-path" && !isValidLocalUrl(value))
-+        return "unsupported_clip_path";
-+    if(name == "fill-rule" || name == "clip-rule") {
-+        if(!matchesAny(normalizedValue, "nonzero", "evenodd"))
-+            return "unsupported_property_value";
-+    }
-+    if(name == "display" && !matchesAny(normalizedValue, "inline", "none"))
-+        return "unsupported_property_value";
-+    if(name == "visibility"
-+            && !matchesAny(normalizedValue, "visible", "hidden", "collapse"))
-+        return "unsupported_property_value";
-+    if(name == "overflow"
-+            && !matchesAny(normalizedValue, "visible", "hidden"))
-+        return "unsupported_property_value";
-+    if(name == "stroke-linecap"
-+            && !matchesAny(normalizedValue, "butt", "round", "square"))
-+        return "unsupported_property_value";
-+    if(name == "stroke-linejoin"
-+            && !matchesAny(normalizedValue, "miter", "round", "bevel"))
-+        return "unsupported_property_value";
-+    if(name == "pointer-events"
-+            && normalizedValue != "none" && normalizedValue != "auto"
-+            && normalizedValue != "stroke" && normalizedValue != "fill"
-+            && normalizedValue != "painted" && normalizedValue != "visible"
-+            && normalizedValue != "visibleStroke"
-+            && normalizedValue != "visibleFill"
-+            && normalizedValue != "visiblePainted"
-+            && normalizedValue != "bounding-box"
-+            && normalizedValue != "all")
-+        return "unsupported_property_value";
-+    if(name == "stroke-width"
-+            && !isValidLengthValue(value, LengthNegativeMode::Forbid))
-+        return "unsupported_property_value";
-+    if(name == "stroke-dashoffset"
-+            && !isValidLengthValue(value, LengthNegativeMode::Allow))
-+        return "unsupported_property_value";
-+    if(name == "stroke-dasharray" && !isValidDashArray(value))
-+        return "unsupported_property_value";
-+    if(name == "stroke-miterlimit") {
-+        float miterLimit = 0.f;
-+        if(!parseNumberValue(value, false, miterLimit) || miterLimit < 1.f)
-+            return "unsupported_property_value";
-+    }
-+    if(name == "opacity" || name == "fill-opacity"
-+            || name == "stroke-opacity" || name == "stop-opacity") {
-+        float alpha = 0.f;
-+        if(!parseNumberValue(value, true, alpha))
-+            return "unsupported_property_value";
-+        if(name == "stop-opacity"
-+                && isPartialAlphaValue(value, true))
-+            return "unsupported_partial_alpha";
-+    }
++    auto capability = recorder::classifyAttributeCapability(name, value, known,
++        elementId == ElementID::Style, elementId == ElementID::Image, cssDeclaration);
++    if(!capability.reason.empty() || !capability.needsColorValidation)
++        return capability.reason;
++    stripLeadingAndTrailingSpaces(value);
++    plutovg_color_t color;
++    if(plutovg_color_parse(&color, value.data(), static_cast<int>(value.size()))
++            != static_cast<int>(value.size()))
++        return "unsupported_color_syntax";
 +    return {};
 +}
 +
@@ -4228,7 +2293,7 @@ index 183937c..94f0f49 100644
  struct SimpleSelector;
  
  using Selector = std::vector<SimpleSelector>;
-@@ -25,6 +480,7 @@ struct AttributeSelector {
+@@ -25,6 +114,7 @@ struct AttributeSelector {
      MatchType matchType{MatchType::None};
      PropertyID id{PropertyID::Unknown};
      std::string value;
@@ -4236,7 +2301,7 @@ index 183937c..94f0f49 100644
  };
  
  struct PseudoClassSelector {
-@@ -66,7 +522,9 @@ struct SimpleSelector {
+@@ -66,7 +156,9 @@ struct SimpleSelector {
  struct Declaration {
      int specificity;
      PropertyID id;
@@ -4246,7 +2311,7 @@ index 183937c..94f0f49 100644
  };
  
  using DeclarationList = std::vector<Declaration>;
-@@ -76,25 +534,44 @@ struct Rule {
+@@ -76,25 +168,44 @@ struct Rule {
      DeclarationList declarations;
  };
  
@@ -4299,7 +2364,7 @@ index 183937c..94f0f49 100644
      size_t m_position;
  };
  
-@@ -102,14 +579,94 @@ inline bool operator<(const RuleData& a, const RuleData& b) { return a.isLessTha
+@@ -102,14 +213,94 @@ inline bool operator<(const RuleData& a, const RuleData& b) { return a.isLessTha
  
  using RuleDataList = std::vector<RuleData>;
  
@@ -4396,7 +2461,7 @@ index 183937c..94f0f49 100644
  }
  
  constexpr bool includes(std::string_view value, std::string_view subvalue)
-@@ -155,7 +712,7 @@ static bool matchAttributeSelector(const AttributeSelector& selector, const SVGE
+@@ -155,7 +346,7 @@ static bool matchAttributeSelector(const AttributeSelector& selector, const SVGE
  {
      const auto& value = element->getAttribute(selector.id);
      if(selector.matchType == AttributeSelector::MatchType::None)
@@ -4405,7 +2470,7 @@ index 183937c..94f0f49 100644
      if(selector.matchType == AttributeSelector::MatchType::Equals)
          return equals(value, selector.value);
      if(selector.matchType == AttributeSelector::MatchType::Contains)
-@@ -171,18 +728,25 @@ static bool matchAttributeSelector(const AttributeSelector& selector, const SVGE
+@@ -171,18 +362,25 @@ static bool matchAttributeSelector(const AttributeSelector& selector, const SVGE
      return false;
  }
  
@@ -4435,7 +2500,7 @@ index 183937c..94f0f49 100644
                      return false;
                  }
              }
-@@ -194,9 +758,11 @@ static bool matchPseudoClassSelector(const PseudoClassSelector& selector, const
+@@ -194,9 +392,11 @@ static bool matchPseudoClassSelector(const PseudoClassSelector& selector, const
      if(selector.type == PseudoClassSelector::Type::Not) {
          for(const auto& subSelector : selector.subSelectors) {
              for(const auto& simpleSelector : subSelector) {
@@ -4448,7 +2513,7 @@ index 183937c..94f0f49 100644
              }
          }
  
-@@ -212,6 +778,8 @@ static bool matchPseudoClassSelector(const PseudoClassSelector& selector, const
+@@ -212,6 +412,8 @@ static bool matchPseudoClassSelector(const PseudoClassSelector& selector, const
      if(selector.type == PseudoClassSelector::Type::FirstOfType) {
          auto sibling = element->previousElement();
          while(sibling) {
@@ -4457,7 +2522,7 @@ index 183937c..94f0f49 100644
              if(sibling->id() == element->id())
                  return false;
              sibling = sibling->previousElement();
-@@ -223,6 +791,8 @@ static bool matchPseudoClassSelector(const PseudoClassSelector& selector, const
+@@ -223,6 +425,8 @@ static bool matchPseudoClassSelector(const PseudoClassSelector& selector, const
      if(selector.type == PseudoClassSelector::Type::LastOfType) {
          auto sibling = element->nextElement();
          while(sibling) {
@@ -4466,7 +2531,7 @@ index 183937c..94f0f49 100644
              if(sibling->id() == element->id())
                  return false;
              sibling = sibling->nextElement();
-@@ -231,21 +801,51 @@ static bool matchPseudoClassSelector(const PseudoClassSelector& selector, const
+@@ -231,21 +435,51 @@ static bool matchPseudoClassSelector(const PseudoClassSelector& selector, const
          return true;
      }
  
@@ -4520,7 +2585,7 @@ index 183937c..94f0f49 100644
              return false;
          }
      }
-@@ -253,13 +853,14 @@ static bool matchSimpleSelector(const SimpleSelector& selector, const SVGElement
+@@ -253,13 +487,14 @@ static bool matchSimpleSelector(const SimpleSelector& selector, const SVGElement
      return true;
  }
  
@@ -4537,7 +2602,7 @@ index 183937c..94f0f49 100644
          return false;
      }
  
-@@ -267,6 +868,8 @@ static bool matchSelector(const Selector& selector, const SVGElement* element)
+@@ -267,6 +502,8 @@ static bool matchSelector(const Selector& selector, const SVGElement* element)
      ++it;
  
      while(it != end) {
@@ -4546,7 +2611,7 @@ index 183937c..94f0f49 100644
          switch(combinator) {
          case SimpleSelector::Combinator::Child:
          case SimpleSelector::Combinator::Descendant:
-@@ -282,7 +885,7 @@ static bool matchSelector(const Selector& selector, const SVGElement* element)
+@@ -282,7 +519,7 @@ static bool matchSelector(const Selector& selector, const SVGElement* element)
  
          if(element == nullptr)
              return false;
@@ -4555,7 +2620,7 @@ index 183937c..94f0f49 100644
              combinator = it->combinator;
              ++it;
          } else if(combinator != SimpleSelector::Combinator::Descendant
-@@ -294,9 +897,9 @@ static bool matchSelector(const Selector& selector, const SVGElement* element)
+@@ -294,9 +531,9 @@ static bool matchSelector(const Selector& selector, const SVGElement* element)
      return true;
  }
  
@@ -4567,7 +2632,7 @@ index 183937c..94f0f49 100644
  }
  
  constexpr bool IS_CSS_STARTNAMECHAR(int c) { return IS_ALPHA(c) || c == '_' || c == '-'; }
-@@ -331,6 +934,7 @@ static bool parseIdSelector(std::string_view& input, SimpleSelector& simpleSelec
+@@ -331,6 +568,7 @@ static bool parseIdSelector(std::string_view& input, SimpleSelector& simpleSelec
      AttributeSelector a;
      a.id = PropertyID::Id;
      a.matchType = AttributeSelector::MatchType::Equals;
@@ -4575,7 +2640,7 @@ index 183937c..94f0f49 100644
      if(!readCSSIdentifier(input, a.value))
          return false;
      simpleSelector.attributeSelectors.push_back(std::move(a));
-@@ -391,9 +995,15 @@ static bool parseAttributeSelector(std::string_view& input, SimpleSelector& simp
+@@ -391,9 +629,15 @@ static bool parseAttributeSelector(std::string_view& input, SimpleSelector& simp
      return true;
  }
  
@@ -4583,17 +2648,17 @@ index 183937c..94f0f49 100644
 +static bool parseSelectors(std::string_view& input, SelectorList& selectors,
 +                           CssParseBudget* budget = nullptr,
 +                           bool countRules = true);
++
++static thread_local size_t selectorParseDepth = 0;
  
 -static bool parsePseudoClassSelector(std::string_view& input, SimpleSelector& simpleSelector)
-+static thread_local size_t selectorParseDepth = 0;
-+
 +static bool parsePseudoClassSelector(std::string_view& input,
 +                                     SimpleSelector& simpleSelector,
 +                                     CssParseBudget* budget)
  {
      std::string name;
      if(!readCSSIdentifier(input, name))
-@@ -403,6 +1013,8 @@ static bool parsePseudoClassSelector(std::string_view& input, SimpleSelector& si
+@@ -403,6 +647,8 @@ static bool parsePseudoClassSelector(std::string_view& input, SimpleSelector& si
          selector.type = PseudoClassSelector::Type::Empty;
      else if(name.compare("root") == 0)
          selector.type = PseudoClassSelector::Type::Root;
@@ -4602,7 +2667,7 @@ index 183937c..94f0f49 100644
      else if(name.compare("not") == 0)
          selector.type = PseudoClassSelector::Type::Not;
      else if(name.compare("first-child") == 0)
-@@ -422,7 +1034,11 @@ static bool parsePseudoClassSelector(std::string_view& input, SimpleSelector& si
+@@ -422,7 +668,11 @@ static bool parsePseudoClassSelector(std::string_view& input, SimpleSelector& si
          if(!skipDelimiter(input, '('))
              return false;
          skipOptionalSpaces(input);
@@ -4615,7 +2680,7 @@ index 183937c..94f0f49 100644
              return false;
          skipOptionalSpaces(input);
          if(!skipDelimiter(input, ')')) {
-@@ -434,7 +1050,9 @@ static bool parsePseudoClassSelector(std::string_view& input, SimpleSelector& si
+@@ -434,7 +684,9 @@ static bool parsePseudoClassSelector(std::string_view& input, SimpleSelector& si
      return true;
  }
  
@@ -4626,7 +2691,7 @@ index 183937c..94f0f49 100644
  {
      auto consumed = parseTagSelector(input, simpleSelector);
      do {
-@@ -445,7 +1063,8 @@ static bool parseSimpleSelector(std::string_view& input, SimpleSelector& simpleS
+@@ -445,7 +697,8 @@ static bool parseSimpleSelector(std::string_view& input, SimpleSelector& simpleS
          else if(skipDelimiter(input, '['))
              failed = !parseAttributeSelector(input, simpleSelector);
          else if(skipDelimiter(input, ':'))
@@ -4636,7 +2701,7 @@ index 183937c..94f0f49 100644
          else
              break;
          consumed = true;
-@@ -470,31 +1089,39 @@ static bool parseCombinator(std::string_view& input, SimpleSelector::Combinator&
+@@ -470,31 +723,39 @@ static bool parseCombinator(std::string_view& input, SimpleSelector::Combinator&
      return combinator != SimpleSelector::Combinator::None;
  }
  
@@ -4681,7 +2746,7 @@ index 183937c..94f0f49 100644
  {
      if(!skipDelimiter(input, '{'))
          return false;
-@@ -503,6 +1130,8 @@ static bool parseDeclarations(std::string_view& input, DeclarationList& declarat
+@@ -503,6 +764,8 @@ static bool parseDeclarations(std::string_view& input, DeclarationList& declarat
          std::string name;
          if(!readCSSIdentifier(input, name))
              return false;
@@ -4690,7 +2755,7 @@ index 183937c..94f0f49 100644
          skipOptionalSpaces(input);
          if(!skipDelimiter(input, ':'))
              return false;
-@@ -513,37 +1142,134 @@ static bool parseDeclarations(std::string_view& input, DeclarationList& declarat
+@@ -513,37 +776,134 @@ static bool parseDeclarations(std::string_view& input, DeclarationList& declarat
          value.remove_suffix(input.length());
          stripTrailingSpaces(value);
  
@@ -4734,9 +2799,8 @@ index 183937c..94f0f49 100644
          return false;
 -    return parseDeclarations(input, rule.declarations);
 +    return parseDeclarations(input, rule.declarations, document, budget);
- }
- 
--static RuleDataList parseStyleSheet(std::string_view input)
++}
++
 +static bool hasUnsupportedSelector(
 +    const SelectorList& selectors, size_t depth = 0)
 +{
@@ -4777,8 +2841,9 @@ index 183937c..94f0f49 100644
 +{
 +    return std::tie(left.idCount, left.classCount, left.typeCount)
 +        < std::tie(right.idCount, right.classCount, right.typeCount);
-+}
-+
+ }
+ 
+-static RuleDataList parseStyleSheet(std::string_view input)
 +static CssSpecificity selectorListSpecificity(const SelectorList& selectors)
 +{
 +    CssSpecificity specificity;
@@ -4831,7 +2896,7 @@ index 183937c..94f0f49 100644
              int depth = 0;
              while(!input.empty()) {
                  auto ch = input.front();
-@@ -562,27 +1288,134 @@ static RuleDataList parseStyleSheet(std::string_view input)
+@@ -562,27 +922,134 @@ static RuleDataList parseStyleSheet(std::string_view input)
          }
  
          Rule rule;
@@ -4980,7 +3045,7 @@ index 183937c..94f0f49 100644
  static SelectorList parseQuerySelectors(std::string_view input)
  {
      SelectorList selectors;
-@@ -595,25 +1428,60 @@ static SelectorList parseQuerySelectors(std::string_view input)
+@@ -595,25 +1062,60 @@ static SelectorList parseQuerySelectors(std::string_view input)
      return selectors;
  }
  
@@ -5048,7 +3113,7 @@ index 183937c..94f0f49 100644
  }
  
  inline void removeStyleComments(std::string& value)
-@@ -626,7 +1494,83 @@ inline void removeStyleComments(std::string& value)
+@@ -626,7 +1128,83 @@ inline void removeStyleComments(std::string& value)
      }
  }
  
@@ -5133,7 +3198,7 @@ index 183937c..94f0f49 100644
  {
      output.clear();
      while(!input.empty()) {
-@@ -644,34 +1588,8 @@ inline bool decodeText(std::string_view input, std::string& output)
+@@ -644,34 +1222,8 @@ inline bool decodeText(std::string_view input, std::string& output)
              unsigned int cp;
              if(!parseInteger(input, cp, base))
                  return false;
@@ -5170,7 +3235,7 @@ index 183937c..94f0f49 100644
          } else {
              if(skipString(input, "amp")) {
                  output.push_back('&');
-@@ -683,6 +1601,20 @@ inline bool decodeText(std::string_view input, std::string& output)
+@@ -683,6 +1235,20 @@ inline bool decodeText(std::string_view input, std::string& output)
                  output.push_back('\"');
              } else if(skipString(input, "apos")) {
                  output.push_back('\'');
@@ -5191,7 +3256,7 @@ index 183937c..94f0f49 100644
              } else {
                  return false;
              }
-@@ -699,35 +1631,166 @@ inline bool decodeText(std::string_view input, std::string& output)
+@@ -699,35 +1265,166 @@ inline bool decodeText(std::string_view input, std::string& output)
  constexpr bool IS_STARTNAMECHAR(int c) { return IS_ALPHA(c) ||  c == '_' || c == ':'; }
  constexpr bool IS_NAMECHAR(int c) { return IS_STARTNAMECHAR(c) || IS_NUM(c) || c == '-' || c == '.'; }
  
@@ -5371,7 +3436,7 @@ index 183937c..94f0f49 100644
          }
  
          if(currentElement->id() == ElementID::Style) {
-@@ -738,9 +1801,12 @@ bool Document::parse(const char* data, size_t length)
+@@ -738,9 +1435,12 @@ bool Document::parse(const char* data, size_t length)
              node->setData(buffer);
              currentElement->addChild(std::move(node));
          }
@@ -5384,7 +3449,7 @@ index 183937c..94f0f49 100644
      if(length >= 3) {
          auto buffer = (const uint8_t*)(data);
  
-@@ -755,12 +1821,16 @@ bool Document::parse(const char* data, size_t length)
+@@ -755,12 +1455,16 @@ bool Document::parse(const char* data, size_t length)
      while(!input.empty()) {
          if(currentElement) {
              auto text = input.substr(0, input.find('<'));
@@ -5402,7 +3467,7 @@ index 183937c..94f0f49 100644
          }
  
          if(!skipDelimiter(input, '<'))
-@@ -771,6 +1841,18 @@ bool Document::parse(const char* data, size_t length)
+@@ -771,6 +1475,18 @@ bool Document::parse(const char* data, size_t length)
              auto n = input.find("?>");
              if(n == std::string_view::npos)
                  return false;
@@ -5421,7 +3486,7 @@ index 183937c..94f0f49 100644
              input.remove_prefix(n + 2);
              continue;
          }
-@@ -780,21 +1862,36 @@ bool Document::parse(const char* data, size_t length)
+@@ -780,21 +1496,36 @@ bool Document::parse(const char* data, size_t length)
                  auto n = input.find("-->");
                  if(n == std::string_view::npos)
                      return false;
@@ -5461,7 +3526,7 @@ index 183937c..94f0f49 100644
                  while(!input.empty() && input.front() != '>') {
                      if(input.front() == '[') {
                          int depth = 1;
-@@ -818,13 +1915,15 @@ bool Document::parse(const char* data, size_t length)
+@@ -818,13 +1549,15 @@ bool Document::parse(const char* data, size_t length)
          }
  
          if(skipDelimiter(input, '/')) {
@@ -5480,7 +3545,7 @@ index 183937c..94f0f49 100644
                      return false;
                  currentElement = currentElement->parentElement();
              } else {
-@@ -839,11 +1938,20 @@ bool Document::parse(const char* data, size_t length)
+@@ -839,11 +1572,20 @@ bool Document::parse(const char* data, size_t length)
  
          if(!readIdentifier(input, buffer))
              return false;
@@ -5502,7 +3567,7 @@ index 183937c..94f0f49 100644
              if(id == ElementID::Unknown) {
                  ignoring = 1;
              } else {
-@@ -863,7 +1971,16 @@ bool Document::parse(const char* data, size_t length)
+@@ -863,7 +1605,16 @@ bool Document::parse(const char* data, size_t length)
          }
  
          skipOptionalSpaces(input);
@@ -5519,7 +3584,7 @@ index 183937c..94f0f49 100644
              skipOptionalSpaces(input);
              if(!skipDelimiter(input, '='))
                  return false;
-@@ -875,17 +1992,49 @@ bool Document::parse(const char* data, size_t length)
+@@ -875,17 +1626,49 @@ bool Document::parse(const char* data, size_t length)
              auto n = input.find(quote);
              if(n == std::string_view::npos)
                  return false;
@@ -5575,7 +3640,7 @@ index 183937c..94f0f49 100644
                      element->setAttribute(0x1, id, buffer);
                  }
              }
-@@ -895,12 +2044,15 @@ bool Document::parse(const char* data, size_t length)
+@@ -895,12 +1678,15 @@ bool Document::parse(const char* data, size_t length)
          }
  
          if(skipDelimiter(input, '>')) {
@@ -5591,7 +3656,7 @@ index 183937c..94f0f49 100644
              if(!skipDelimiter(input, '>'))
                  return false;
              if(ignoring > 0)
-@@ -911,7 +2063,9 @@ bool Document::parse(const char* data, size_t length)
+@@ -911,7 +1697,9 @@ bool Document::parse(const char* data, size_t length)
          return false;
      }
  
@@ -5602,7 +3667,7 @@ index 183937c..94f0f49 100644
          return false;
      applyStyleSheet(styleSheet);
      m_rootElement->build();
-@@ -920,14 +2074,41 @@ bool Document::parse(const char* data, size_t length)
+@@ -920,14 +1708,41 @@ bool Document::parse(const char* data, size_t length)
  
  void Document::applyStyleSheet(const std::string& content)
  {
@@ -5673,432 +3738,59 @@ index 74a23a8..ab74699 100644
      Width,
      Word_Spacing,
 diff --git a/source/svgrenderstate.cpp b/source/svgrenderstate.cpp
-index 550d389..2efe6c2 100644
+index 550d389..ca79a04 100644
 --- a/source/svgrenderstate.cpp
 +++ b/source/svgrenderstate.cpp
-@@ -1,11 +1,868 @@
+@@ -1,11 +1,271 @@
  #include "svgrenderstate.h"
 +#include "svgparserutils.h"
++#include "lumina_svg_core/recorder/exact_path.h"
++#include "lumina_svg_core/recorder/numeric.h"
 +
 +#include <array>
 +#include <cctype>
 +#include <cmath>
 +#include <string_view>
++#include <utility>
  
  namespace lunasvg {
  
++namespace recorder = lumina_svg_core::recorder;
++using recorder::appendExactMove;
++using recorder::appendExactLine;
++using recorder::appendExactEllipse;
++using recorder::inverseTransform;
++using recorder::parseExactTransform;
++
 +namespace {
-+
-+
-+PaintTransform rawMultiply(const PaintTransform& left,
-+                           const PaintTransform& right)
-+{
-+    return {
-+        left.a * right.a + left.b * right.c,
-+        left.a * right.b + left.b * right.d,
-+        left.c * right.a + left.d * right.c,
-+        left.c * right.b + left.d * right.d,
-+        left.e * right.a + left.f * right.c + right.e,
-+        left.e * right.b + left.f * right.d + right.f,
-+    };
-+}
-+
-+bool inverseTransform(const PaintTransform& value, PaintTransform& inverse)
-+{
-+    const double determinant = value.a * value.d - value.b * value.c;
-+    if(!std::isfinite(determinant) || determinant == 0.0)
-+        return false;
-+    const double scale = 1.0 / determinant;
-+    inverse = {
-+        value.d * scale,
-+        -value.b * scale,
-+        -value.c * scale,
-+        value.a * scale,
-+        (value.c * value.f - value.d * value.e) * scale,
-+        (value.b * value.e - value.a * value.f) * scale,
-+    };
-+    return true;
-+}
-+
-+void skipTransformSpaces(std::string_view& input)
-+{
-+    while(!input.empty() && IS_WS(input.front()))
-+        input.remove_prefix(1);
-+}
-+
-+bool parseTransformArguments(std::string_view& input,
-+                             std::array<double, 6>& values,
-+                             size_t& count)
-+{
-+    skipTransformSpaces(input);
-+    if(input.empty() || input.front() != '(')
-+        return false;
-+    input.remove_prefix(1);
-+    count = 0;
-+    while(true) {
-+        skipTransformSpaces(input);
-+        if(input.empty())
-+            return false;
-+        if(input.front() == ')') {
-+            input.remove_prefix(1);
-+            return true;
-+        }
-+        if(count == values.size()
-+                || !parseNumber(input, values[count])
-+                || !std::isfinite(values[count]))
-+            return false;
-+        ++count;
-+        skipTransformSpaces(input);
-+        if(!input.empty() && input.front() == ',')
-+            input.remove_prefix(1);
-+    }
-+}
-+
-+PaintTransform translated(double x, double y)
-+{
-+    return {1, 0, 0, 1, x, y};
-+}
-+
-+PaintTransform scaled(double x, double y)
-+{
-+    return {x, 0, 0, y, 0, 0};
-+}
-+
-+PaintTransform rotated(double degrees)
-+{
-+    constexpr double RADIANS_PER_DEGREE =
-+        3.141592653589793238462643383279502884 / 180.0;
-+    const double radians = degrees * RADIANS_PER_DEGREE;
-+    const double cosine = std::cos(radians);
-+    const double sine = std::sin(radians);
-+    return {cosine, sine, -sine, cosine, 0, 0};
-+}
-+
-+PaintTransform sheared(double xDegrees, double yDegrees)
-+{
-+    constexpr double RADIANS_PER_DEGREE =
-+        3.141592653589793238462643383279502884 / 180.0;
-+    return {
-+        1,
-+        std::tan(yDegrees * RADIANS_PER_DEGREE),
-+        std::tan(xDegrees * RADIANS_PER_DEGREE),
-+        1,
-+        0,
-+        0,
-+    };
-+}
-+
-+bool parseExactTransform(std::string_view input, PaintTransform& result)
-+{
-+    result = {};
-+    skipTransformSpaces(input);
-+    while(!input.empty()) {
-+        const size_t nameLength = [&]() {
-+            size_t length = 0;
-+            while(length < input.size() && IS_ALPHA(input[length]))
-+                ++length;
-+            return length;
-+        }();
-+        if(nameLength == 0)
-+            return false;
-+        const auto name = input.substr(0, nameLength);
-+        input.remove_prefix(nameLength);
-+        std::array<double, 6> values{};
-+        size_t count = 0;
-+        if(!parseTransformArguments(input, values, count))
-+            return false;
-+        PaintTransform operation;
-+        if(name == "matrix" && count == 6) {
-+            operation = {
-+                values[0], values[1], values[2],
-+                values[3], values[4], values[5],
-+            };
-+        } else if(name == "translate" && (count == 1 || count == 2)) {
-+            operation = translated(values[0], count == 2 ? values[1] : 0);
-+        } else if(name == "scale" && (count == 1 || count == 2)) {
-+            operation = scaled(values[0], count == 2 ? values[1] : values[0]);
-+        } else if(name == "rotate" && (count == 1 || count == 3)) {
-+            if(count == 3)
-+                result = composeRecordingTransforms(
-+                    result, translated(values[1], values[2]));
-+            operation = rotated(values[0]);
-+            if(count == 3) {
-+                result = composeRecordingTransforms(result, operation);
-+                operation = translated(-values[1], -values[2]);
-+            }
-+        } else if(name == "skewX" && count == 1) {
-+            operation = sheared(values[0], 0);
-+        } else if(name == "skewY" && count == 1) {
-+            operation = sheared(0, values[0]);
-+        } else {
-+            return false;
-+        }
-+        result = composeRecordingTransforms(result, operation);
-+        skipTransformSpaces(input);
-+        if(!input.empty() && input.front() == ',') {
-+            input.remove_prefix(1);
-+            skipTransformSpaces(input);
-+        }
-+    }
-+    return true;
-+}
-+
-+void skipExactPathSeparators(std::string_view& input)
-+{
-+    while(!input.empty()
-+            && (IS_WS(input.front()) || input.front() == ','))
-+        input.remove_prefix(1);
-+}
-+
-+size_t exactPathParameterCount(char command)
-+{
-+    switch(static_cast<char>(std::tolower(
-+            static_cast<unsigned char>(command)))) {
-+    case 'm':
-+    case 'l': return 2;
-+    case 'h':
-+    case 'v': return 1;
-+    case 'c': return 6;
-+    case 's': return 4;
-+    case 'q': return 4;
-+    case 't': return 2;
-+    case 'a': return 7;
-+    default: return 0;
-+    }
-+}
-+
-+bool appendExactArc(std::vector<PaintPathVerb>& verbs,
-+                    std::vector<PaintPoint>& points,
-+                    double startX, double startY,
-+                    const std::array<double, 7>& values,
-+                    bool relative, double& endX, double& endY,
-+                    double& maximumLoweringError)
-+{
-+    constexpr double PI =
-+        3.141592653589793238462643383279502884;
-+    double radiusX = std::abs(values[0]);
-+    double radiusY = std::abs(values[1]);
-+    const double reducedAngleDegrees = std::fmod(values[2], 360.0);
-+    const double angle = reducedAngleDegrees * PI / 180.0;
-+    const bool largeArc = values[3] == 1.0;
-+    const bool sweep = values[4] == 1.0;
-+    if((values[3] != 0.0 && values[3] != 1.0)
-+            || (values[4] != 0.0 && values[4] != 1.0))
-+        return false;
-+    endX = relative ? startX + values[5] : values[5];
-+    endY = relative ? startY + values[6] : values[6];
-+    if(radiusX == 0.0 || radiusY == 0.0
-+            || (startX == endX && startY == endY)) {
-+        verbs.push_back(PaintPathVerb::LineTo);
-+        points.push_back({endX, endY});
-+        return true;
-+    }
-+
-+    const double cosine = std::cos(angle);
-+    const double sine = std::sin(angle);
-+    double deltaX = (startX - endX) * 0.5;
-+    double deltaY = (startY - endY) * 0.5;
-+    const double rotatedX = cosine * deltaX + sine * deltaY;
-+    const double rotatedY = -sine * deltaX + cosine * deltaY;
-+    deltaX = rotatedX;
-+    deltaY = rotatedY;
-+    const double radiusScale = deltaX * deltaX / (radiusX * radiusX)
-+        + deltaY * deltaY / (radiusY * radiusY);
-+    if(radiusScale > 1.0) {
-+        const double scale = std::sqrt(radiusScale);
-+        radiusX *= scale;
-+        radiusY *= scale;
-+    }
-+    constexpr double ARC_CUBIC_RELATIVE_ERROR = 1.0e-6;
-+    constexpr double ARC_OPERATION_ULPS = 64.0;
-+    const double arithmeticMagnitude = std::max({
-+        1.0, std::abs(startX), std::abs(startY),
-+        std::abs(endX), std::abs(endY), radiusX, radiusY,
-+    });
-+    maximumLoweringError = std::max(
-+        maximumLoweringError,
-+        std::max(radiusX, radiusY) * ARC_CUBIC_RELATIVE_ERROR
-+            + arithmeticMagnitude
-+                * std::numeric_limits<double>::epsilon()
-+                * ARC_OPERATION_ULPS);
-+
-+    const auto normalize = [&](double x, double y) {
-+        return PaintPoint{
-+            (cosine * x + sine * y) / radiusX,
-+            (-sine * x + cosine * y) / radiusY,
-+        };
-+    };
-+    const auto sourceStart = normalize(startX, startY);
-+    const auto sourceEnd = normalize(endX, endY);
-+    double chordX = sourceEnd.x - sourceStart.x;
-+    double chordY = sourceEnd.y - sourceStart.y;
-+    const double chordLengthSquared = chordX * chordX + chordY * chordY;
-+    if(!(std::isfinite(chordLengthSquared) && chordLengthSquared > 0.0))
-+        return false;
-+    double centerScaleSquared = 1.0 / chordLengthSquared - 0.25;
-+    centerScaleSquared = std::max(0.0, centerScaleSquared);
-+    double centerScale = std::sqrt(centerScaleSquared);
-+    if(sweep == largeArc)
-+        centerScale = -centerScale;
-+    chordX *= centerScale;
-+    chordY *= centerScale;
-+    const double centerX = 0.5 * (sourceStart.x + sourceEnd.x) - chordY;
-+    const double centerY = 0.5 * (sourceStart.y + sourceEnd.y) + chordX;
-+    const double startAngle = std::atan2(
-+        sourceStart.y - centerY, sourceStart.x - centerX);
-+    const double endAngle = std::atan2(
-+        sourceEnd.y - centerY, sourceEnd.x - centerX);
-+    double sweepAngle = endAngle - startAngle;
-+    if(sweepAngle < 0.0 && sweep)
-+        sweepAngle += 2.0 * PI;
-+    else if(sweepAngle > 0.0 && !sweep)
-+        sweepAngle -= 2.0 * PI;
-+    const size_t segmentCount = std::max<size_t>(
-+        1, static_cast<size_t>(std::ceil(
-+            std::abs(sweepAngle) / (PI / 8.0))));
-+    const auto denormalize = [&](double x, double y) {
-+        return PaintPoint{
-+            radiusX * x * cosine - radiusY * y * sine,
-+            radiusX * x * sine + radiusY * y * cosine,
-+        };
-+    };
-+    for(size_t index = 0; index < segmentCount; ++index) {
-+        const double firstAngle = startAngle
-+            + static_cast<double>(index) * sweepAngle / segmentCount;
-+        const double lastAngle = startAngle
-+            + static_cast<double>(index + 1) * sweepAngle / segmentCount;
-+        const double tangent = 4.0 / 3.0
-+            * std::tan(0.25 * (lastAngle - firstAngle));
-+        auto control1 = denormalize(
-+            std::cos(firstAngle) - tangent * std::sin(firstAngle)
-+                + centerX,
-+            std::sin(firstAngle) + tangent * std::cos(firstAngle)
-+                + centerY);
-+        auto control2 = denormalize(
-+            std::cos(lastAngle) + tangent * std::sin(lastAngle) + centerX,
-+            std::sin(lastAngle) - tangent * std::cos(lastAngle) + centerY);
-+        auto endpoint = denormalize(
-+            std::cos(lastAngle) + centerX,
-+            std::sin(lastAngle) + centerY);
-+        if(index + 1 == segmentCount)
-+            endpoint = {endX, endY};
-+        verbs.push_back(PaintPathVerb::CubicTo);
-+        points.push_back(control1);
-+        points.push_back(control2);
-+        points.push_back(endpoint);
-+    }
-+    return true;
-+}
 +
 +bool parseExactLengthAttribute(const SVGElement* source, PropertyID property,
 +                               LengthDirection direction,
 +                               double defaultValue, bool required,
 +                               double& value)
 +{
-+    std::string_view input(source->getAttribute(property));
-+    stripLeadingAndTrailingSpaces(input);
-+    if(input.empty()) {
-+        if(required)
-+            return false;
-+        value = defaultValue;
-+        return true;
-+    }
-+    if(!parseNumber(input, value) || !std::isfinite(value))
++    recorder::ExactLengthUnits units;
++    if(!recorder::parseExactLength(source->getAttribute(property),
++            defaultValue, required, value, units))
 +        return false;
-+    if(input.empty())
-+        return true;
-+
-+    if(input == "px")
-+        return true;
-+    if(input == "pc") {
-+        value *= 16.0;
-+        return std::isfinite(value);
-+    }
-+    if(input == "pt") {
-+        value *= 96.0 / 72.0;
-+        return std::isfinite(value);
-+    }
-+    if(input == "in") {
-+        value *= 96.0;
-+        return std::isfinite(value);
-+    }
-+    if(input == "cm") {
-+        value *= 96.0 / 2.54;
-+        return std::isfinite(value);
-+    }
-+    if(input == "mm") {
-+        value *= 96.0 / 25.4;
-+        return std::isfinite(value);
-+    }
-+    if(input == "em") {
++    if(units == recorder::ExactLengthUnits::Em)
 +        value *= static_cast<double>(source->font_size());
-+        return std::isfinite(value);
-+    }
-+    if(input == "ex") {
++    else if(units == recorder::ExactLengthUnits::Ex)
 +        value *= static_cast<double>(source->font_size()) / 2.0;
-+        return std::isfinite(value);
-+    }
-+    if(input == "%") {
++    else if(units == recorder::ExactLengthUnits::Percent) {
 +        const auto viewport = source->currentViewportSize();
 +        double dimension = 0.0;
 +        switch(direction) {
-+        case LengthDirection::Horizontal:
-+            dimension = viewport.w;
-+            break;
-+        case LengthDirection::Vertical:
-+            dimension = viewport.h;
-+            break;
++        case LengthDirection::Horizontal: dimension = viewport.w; break;
++        case LengthDirection::Vertical: dimension = viewport.h; break;
 +        case LengthDirection::Diagonal:
-+            dimension = std::hypot(
-+                static_cast<double>(viewport.w),
-+                static_cast<double>(viewport.h)) / std::sqrt(2.0);
++            dimension = std::hypot(static_cast<double>(viewport.w),
++                                   static_cast<double>(viewport.h)) / std::sqrt(2.0);
 +            break;
 +        }
 +        value *= dimension / 100.0;
-+        return std::isfinite(value);
 +    }
-+    return false;
-+}
-+
-+void appendExactMove(PaintCommand& command, double x, double y)
-+{
-+    command.path_verbs.push_back(PaintPathVerb::MoveTo);
-+    command.path_points.push_back({x, y});
-+}
-+
-+void appendExactLine(PaintCommand& command, double x, double y)
-+{
-+    command.path_verbs.push_back(PaintPathVerb::LineTo);
-+    command.path_points.push_back({x, y});
-+}
-+
-+bool appendExactEllipse(PaintCommand& command,
-+                        double centerX, double centerY,
-+                        double radiusX, double radiusY,
-+                        double& loweringPrecisionError)
-+{
-+    if(!(radiusX > 0.0 && radiusY > 0.0))
-+        return false;
-+    appendExactMove(command, centerX + radiusX, centerY);
-+    std::array<double, 7> arc{{
-+        radiusX, radiusY, 0.0, 0.0, 1.0,
-+        centerX - radiusX, centerY,
-+    }};
-+    double endX = 0;
-+    double endY = 0;
-+    if(!appendExactArc(
-+            command.path_verbs, command.path_points,
-+            centerX + radiusX, centerY, arc, false,
-+            endX, endY, loweringPrecisionError))
-+        return false;
-+    arc[5] = centerX + radiusX;
-+    if(!appendExactArc(
-+            command.path_verbs, command.path_points,
-+            endX, endY, arc, false,
-+            endX, endY, loweringPrecisionError))
-+        return false;
-+    command.path_verbs.push_back(PaintPathVerb::Close);
-+    return true;
++    return std::isfinite(value);
 +}
 +
 +bool recordExactPrimitive(const SVGElement* source,
@@ -6182,85 +3874,15 @@ index 550d389..2efe6c2 100644
 +                        LengthDirection::Vertical, radiusY))
 +                || !(width > 0.0 && height > 0.0))
 +            return false;
-+        if(!hasRadiusX)
-+            radiusX = radiusY;
-+        if(!hasRadiusY)
-+            radiusY = radiusX;
-+        radiusX = std::min(radiusX, width * 0.5);
-+        radiusY = std::min(radiusY, height * 0.5);
-+        if(!(radiusX > 0.0 && radiusY > 0.0)) {
-+            appendExactMove(command, x, y);
-+            appendExactLine(command, x + width, y);
-+            appendExactLine(command, x + width, y + height);
-+            appendExactLine(command, x, y + height);
-+            command.path_verbs.push_back(PaintPathVerb::Close);
-+            return true;
-+        }
-+        containsArc = true;
-+        appendExactMove(command, x + radiusX, y);
-+        appendExactLine(command, x + width - radiusX, y);
-+        const std::array<std::array<double, 2>, 4> endpoints{{
-+            {{x + width, y + radiusY}},
-+            {{x + width - radiusX, y + height}},
-+            {{x, y + height - radiusY}},
-+            {{x + radiusX, y}},
-+        }};
-+        const std::array<std::array<double, 2>, 3> lineEnds{{
-+            {{x + width, y + height - radiusY}},
-+            {{x + radiusX, y + height}},
-+            {{x, y + radiusY}},
-+        }};
-+        double startX = x + width - radiusX;
-+        double startY = y;
-+        for(size_t index = 0; index < endpoints.size(); ++index) {
-+            std::array<double, 7> arc{{
-+                radiusX, radiusY, 0.0, 0.0, 1.0,
-+                endpoints[index][0], endpoints[index][1],
-+            }};
-+            double endX = 0;
-+            double endY = 0;
-+            if(!appendExactArc(
-+                    command.path_verbs, command.path_points,
-+                    startX, startY, arc, false,
-+                    endX, endY, loweringPrecisionError))
-+                return false;
-+            startX = endX;
-+            startY = endY;
-+            if(index < lineEnds.size()) {
-+                startX = lineEnds[index][0];
-+                startY = lineEnds[index][1];
-+                appendExactLine(command, startX, startY);
-+            }
-+        }
-+        command.path_verbs.push_back(PaintPathVerb::Close);
-+        return true;
++        return recorder::appendExactRect(
++            command, x, y, width, height, radiusX, radiusY,
++            hasRadiusX, hasRadiusY, containsArc, loweringPrecisionError);
 +    }
 +    if(source->id() == ElementID::Polyline
 +            || source->id() == ElementID::Polygon) {
-+        std::string_view input(source->getAttribute(PropertyID::Points));
-+        skipExactPathSeparators(input);
-+        bool first = true;
-+        while(!input.empty()) {
-+            double x = 0;
-+            double y = 0;
-+            if(!parseNumber(input, x) || !std::isfinite(x))
-+                return false;
-+            skipExactPathSeparators(input);
-+            if(!parseNumber(input, y) || !std::isfinite(y))
-+                return false;
-+            skipExactPathSeparators(input);
-+            if(first) {
-+                appendExactMove(command, x, y);
-+                first = false;
-+            } else {
-+                appendExactLine(command, x, y);
-+            }
-+        }
-+        if(first)
-+            return false;
-+        if(source->id() == ElementID::Polygon)
-+            command.path_verbs.push_back(PaintPathVerb::Close);
-+        return true;
++        return recorder::recordExactPointList(
++            source->getAttribute(PropertyID::Points),
++            source->id() == ElementID::Polygon, command);
 +    }
 +    return false;
 +}
@@ -6277,164 +3899,16 @@ index 550d389..2efe6c2 100644
 +                           bool& containsArc,
 +                           double& loweringPrecisionError)
 +{
++    if(source->id() == ElementID::Path)
++        return recorder::recordExactPath(source->getAttribute(PropertyID::D),
++                                        command, containsArc, loweringPrecisionError);
 +    containsArc = false;
 +    loweringPrecisionError = 0.0;
-+    PaintCommand exactCommand;
-+    if(source->id() != ElementID::Path) {
-+        if(!recordExactPrimitive(
-+                source, exactCommand, containsArc,
-+                loweringPrecisionError))
-+            return false;
-+        command.path_verbs = std::move(exactCommand.path_verbs);
-+        command.path_points = std::move(exactCommand.path_points);
-+        return true;
-+    }
-+    std::string_view input(source->getAttribute(PropertyID::D));
-+    char activeCommand = 0;
-+    char previousCommand = 0;
-+    double currentX = 0;
-+    double currentY = 0;
-+    double startX = 0;
-+    double startY = 0;
-+    double previousControlX = 0;
-+    double previousControlY = 0;
-+    double previousQuadraticX = 0;
-+    double previousQuadraticY = 0;
-+    skipExactPathSeparators(input);
-+    while(!input.empty()) {
-+        if(IS_ALPHA(input.front())) {
-+            activeCommand = input.front();
-+            input.remove_prefix(1);
-+            skipExactPathSeparators(input);
-+        }
-+        if(activeCommand == 0)
-+            return false;
-+        const char executedCommand = activeCommand;
-+        const char normalized = static_cast<char>(std::tolower(
-+            static_cast<unsigned char>(executedCommand)));
-+        if(normalized == 'z') {
-+            exactCommand.path_verbs.push_back(PaintPathVerb::Close);
-+            currentX = startX;
-+            currentY = startY;
-+            previousCommand = executedCommand;
-+            activeCommand = 0;
-+            skipExactPathSeparators(input);
-+            continue;
-+        }
-+        const size_t parameterCount = exactPathParameterCount(
-+            executedCommand);
-+        if(parameterCount == 0)
-+            return false;
-+        std::array<double, 7> values{};
-+        for(size_t index = 0; index < parameterCount; ++index) {
-+            if(!parseNumber(input, values[index])
-+                    || !std::isfinite(values[index]))
-+                return false;
-+            skipExactPathSeparators(input);
-+        }
-+        const bool relative = executedCommand >= 'a'
-+            && executedCommand <= 'z';
-+        const auto coordinate = [relative](double value, double current) {
-+            return relative ? current + value : value;
-+        };
-+        if(normalized == 'm') {
-+            currentX = coordinate(values[0], currentX);
-+            currentY = coordinate(values[1], currentY);
-+            startX = currentX;
-+            startY = currentY;
-+            exactCommand.path_verbs.push_back(PaintPathVerb::MoveTo);
-+            exactCommand.path_points.push_back({currentX, currentY});
-+            activeCommand = relative ? 'l' : 'L';
-+        } else if(normalized == 'l') {
-+            currentX = coordinate(values[0], currentX);
-+            currentY = coordinate(values[1], currentY);
-+            exactCommand.path_verbs.push_back(PaintPathVerb::LineTo);
-+            exactCommand.path_points.push_back({currentX, currentY});
-+        } else if(normalized == 'h') {
-+            currentX = coordinate(values[0], currentX);
-+            exactCommand.path_verbs.push_back(PaintPathVerb::LineTo);
-+            exactCommand.path_points.push_back({currentX, currentY});
-+        } else if(normalized == 'v') {
-+            currentY = coordinate(values[0], currentY);
-+            exactCommand.path_verbs.push_back(PaintPathVerb::LineTo);
-+            exactCommand.path_points.push_back({currentX, currentY});
-+        } else if(normalized == 'c') {
-+            const double control1X = coordinate(values[0], currentX);
-+            const double control1Y = coordinate(values[1], currentY);
-+            const double control2X = coordinate(values[2], currentX);
-+            const double control2Y = coordinate(values[3], currentY);
-+            currentX = coordinate(values[4], currentX);
-+            currentY = coordinate(values[5], currentY);
-+            exactCommand.path_verbs.push_back(PaintPathVerb::CubicTo);
-+            exactCommand.path_points.push_back({control1X, control1Y});
-+            exactCommand.path_points.push_back({control2X, control2Y});
-+            exactCommand.path_points.push_back({currentX, currentY});
-+            previousControlX = control2X;
-+            previousControlY = control2Y;
-+        } else if(normalized == 's') {
-+            const bool reflect = previousCommand == 'C'
-+                || previousCommand == 'c' || previousCommand == 'S'
-+                || previousCommand == 's';
-+            const double control1X = reflect
-+                ? 2.0 * currentX - previousControlX : currentX;
-+            const double control1Y = reflect
-+                ? 2.0 * currentY - previousControlY : currentY;
-+            const double control2X = coordinate(values[0], currentX);
-+            const double control2Y = coordinate(values[1], currentY);
-+            currentX = coordinate(values[2], currentX);
-+            currentY = coordinate(values[3], currentY);
-+            exactCommand.path_verbs.push_back(PaintPathVerb::CubicTo);
-+            exactCommand.path_points.push_back({control1X, control1Y});
-+            exactCommand.path_points.push_back({control2X, control2Y});
-+            exactCommand.path_points.push_back({currentX, currentY});
-+            previousControlX = control2X;
-+            previousControlY = control2Y;
-+        } else if(normalized == 'q' || normalized == 't') {
-+            const bool smooth = normalized == 't';
-+            const bool reflect = previousCommand == 'Q'
-+                || previousCommand == 'q' || previousCommand == 'T'
-+                || previousCommand == 't';
-+            const double quadraticX = smooth
-+                ? (reflect ? 2.0 * currentX - previousQuadraticX : currentX)
-+                : coordinate(values[0], currentX);
-+            const double quadraticY = smooth
-+                ? (reflect ? 2.0 * currentY - previousQuadraticY : currentY)
-+                : coordinate(values[1], currentY);
-+            const size_t endOffset = smooth ? 0 : 2;
-+            const double endX = coordinate(values[endOffset], currentX);
-+            const double endY = coordinate(values[endOffset + 1], currentY);
-+            const double control1X = (currentX + 2.0 * quadraticX) / 3.0;
-+            const double control1Y = (currentY + 2.0 * quadraticY) / 3.0;
-+            const double control2X = (endX + 2.0 * quadraticX) / 3.0;
-+            const double control2Y = (endY + 2.0 * quadraticY) / 3.0;
-+            exactCommand.path_verbs.push_back(PaintPathVerb::CubicTo);
-+            exactCommand.path_points.push_back({control1X, control1Y});
-+            exactCommand.path_points.push_back({control2X, control2Y});
-+            exactCommand.path_points.push_back({endX, endY});
-+            currentX = endX;
-+            currentY = endY;
-+            previousQuadraticX = quadraticX;
-+            previousQuadraticY = quadraticY;
-+        } else if(normalized == 'a') {
-+            containsArc = true;
-+            double endX = 0;
-+            double endY = 0;
-+            if(!appendExactArc(
-+                    exactCommand.path_verbs, exactCommand.path_points,
-+                    currentX, currentY, values, relative, endX, endY,
-+                    loweringPrecisionError))
-+                return false;
-+            currentX = endX;
-+            currentY = endY;
-+        } else {
-+            return false;
-+        }
-+        previousCommand = executedCommand;
-+    }
-+    if(exactCommand.path_verbs.empty())
++    PaintCommand exact;
++    if(!recordExactPrimitive(source, exact, containsArc, loweringPrecisionError))
 +        return false;
-+    command.path_verbs = std::move(exactCommand.path_verbs);
-+    command.path_points = std::move(exactCommand.path_points);
++    command.path_verbs = std::move(exact.path_verbs);
++    command.path_points = std::move(exact.path_points);
 +    return true;
 +}
 +
@@ -6509,12 +3983,6 @@ index 550d389..2efe6c2 100644
 +    };
 +}
 +
-+PaintTransform composeRecordingTransforms(
-+    const PaintTransform& parent, const PaintTransform& local)
-+{
-+    return rawMultiply(local, parent);
-+}
-+
 +PaintTransform recordingLocalTransform(
 +    const SVGElement* element, const Transform& localTransform)
 +{
@@ -6545,7 +4013,7 @@ index 550d389..2efe6c2 100644
  {
  }
  
-@@ -27,6 +884,44 @@ bool SVGRenderState::hasCycleReference(const SVGElement* element) const
+@@ -27,6 +287,44 @@ bool SVGRenderState::hasCycleReference(const SVGElement* element) const
  
  void SVGRenderState::beginGroup(const SVGBlendInfo& blendInfo)
  {
@@ -6590,7 +4058,7 @@ index 550d389..2efe6c2 100644
      auto requiresCompositing = blendInfo.requiresCompositing(m_mode);
      if(requiresCompositing) {
          auto boundingBox = m_currentTransform.mapRect(m_element->paintBoundingBox());
-@@ -43,6 +938,29 @@ void SVGRenderState::beginGroup(const SVGBlendInfo& blendInfo)
+@@ -43,6 +341,29 @@ void SVGRenderState::beginGroup(const SVGBlendInfo& blendInfo)
  
  void SVGRenderState::endGroup(const SVGBlendInfo& blendInfo)
  {
@@ -6620,7 +4088,7 @@ index 550d389..2efe6c2 100644
      if(m_canvas == m_parent->canvas()) {
          m_canvas->restore();
          return;
-@@ -58,4 +976,228 @@ void SVGRenderState::endGroup(const SVGBlendInfo& blendInfo)
+@@ -58,4 +379,228 @@ void SVGRenderState::endGroup(const SVGBlendInfo& blendInfo)
      m_parent->m_canvas->blendCanvas(*m_canvas, BlendMode::Src_Over, opacity);
  }
  
@@ -6850,25 +4318,26 @@ index 550d389..2efe6c2 100644
 +
  } // namespace lunasvg
 diff --git a/source/svgrenderstate.h b/source/svgrenderstate.h
-index 1e0d434..460b46a 100644
+index 1e0d434..ad3783d 100644
 --- a/source/svgrenderstate.h
 +++ b/source/svgrenderstate.h
-@@ -3,8 +3,21 @@
+@@ -2,9 +2,22 @@
+ #define LUNASVG_SVGRENDERSTATE_H
  
  #include "svgelement.h"
- 
++#include "lumina_svg_core/recorder/transform.h"
++
 +#include <algorithm>
 +#include <cmath>
 +#include <cstdint>
 +#include <limits>
-+
+ 
  namespace lunasvg {
  
 +PaintTransform recordingTransformFrom(const Transform& transform);
 +PaintTransform recordingLocalTransform(
 +    const SVGElement* element, const Transform& localTransform);
-+PaintTransform composeRecordingTransforms(
-+    const PaintTransform& parent, const PaintTransform& local);
++using lumina_svg_core::recorder::composeRecordingTransforms;
 +bool sourcePathMatchesRecordedFloat(
 +    const SVGElement* source, const Path& path);
 +

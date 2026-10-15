@@ -43,6 +43,9 @@ configuration problem.
   Follow the surrounding C++17 conventions and keep helpers focused.
 - Update the API/support documentation when behavior changes. If distributing
   new third-party code, retain its license and attribution.
+- Keep independent recorder algorithms in the project-owned modules. See
+  [the recorder boundary](docs/recorder-boundary.md) before changing the
+  LunaSVG/PlutoVG patch or updating its pinned revision.
 - Do not commit build outputs, environments, credentials, private SVGs, or
   machine-specific paths.
 
