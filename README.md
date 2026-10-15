@@ -16,29 +16,26 @@ the geometry engine, Python bindings, test fixtures, and build tools. It has no
 runtime dependency on Lumina Studio, its UI, printer settings, or application
 services. It does not generate meshes or 3MF files.
 
-**Status:** source version 0.3.2, alpha. CPython 3.12, 3.13 and 3.14 are supported.
+**Status:** source version 0.3.3, unreleased alpha candidate. The current public
+PyPI release is 0.3.2. CPython 3.12, 3.13 and 3.14 are supported.
 The geometry result contract is schema version 4.
 
 ## Installation
 
 ### Prebuilt wheels
 
-After version 0.3.2 is published on PyPI, the standard installation command is:
+Install the current public release from PyPI:
 
 ```bash
 python -m pip install lumina-svg-core==0.3.2
 ```
 
-Confirm availability on the [PyPI version page](https://pypi.org/project/lumina-svg-core/0.3.2/)
-and [publishing workflow](https://github.com/lumina-layer-studio/lumina-svg-core/actions/workflows/publish.yml).
-Until that version is available, use the existing public 0.3.1 GitHub wheels:
-
-```bash
-python -m pip install --only-binary=lumina-svg-core --find-links https://github.com/lumina-layer-studio/lumina-svg-core/releases/expanded_assets/v0.3.1 "lumina-svg-core==0.3.1"
-```
+See the [PyPI version page](https://pypi.org/project/lumina-svg-core/0.3.2/)
+and [completed publishing workflow](https://github.com/lumina-layer-studio/lumina-svg-core/actions/runs/38667556094).
+The 0.3.3 candidate is not yet a public release; CI artifacts are for review.
 
 No C++ compiler, third-party checkout, manual patch, or local wheelhouse is
-needed for a matching prebuilt wheel. The fallback command selects the published 0.3.1 release.
+needed for a matching prebuilt wheel.
 LunaSVG/PlutoVG and Clipper2 are compiled into the extension by maintainers.
 
 Alternatively, download a matching wheel from
@@ -46,7 +43,7 @@ Alternatively, download a matching wheel from
 and install the downloaded file:
 
 ```bash
-python -m pip install /path/to/lumina_svg_core-0.3.1-cp314-cp314-platform.whl
+python -m pip install /path/to/lumina_svg_core-0.3.2-cp314-cp314-platform.whl
 ```
 
 Replace the example filename with the actual downloaded wheel. Wheels are built
@@ -146,8 +143,9 @@ The recorder refactor reduces upstream patch additions by 46.5% while preserving
 the public API and geometry schema. Its prior comparison of 508 private SVGs at
 220 mm / 0.02 mm with strokes enabled found the same 504 supported results and
 four `native_geometry_error` failures in both builds, with zero output differences.
-The four failures remain known 2D geometry limitations and are not counted as passes;
-see [the detailed limitation](docs/support.md#known-corpus-limitation).
+Those failures were not counted as passes. The 0.3.3 candidate addresses the
+canonical-boundary arithmetic and incomplete noding mechanisms, without adding
+printer policy or a fallback; see [the fix and validation scope](docs/support.md#canonical-boundary-fixes).
 
 ## Geometry contract
 

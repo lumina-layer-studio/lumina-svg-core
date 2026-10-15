@@ -103,14 +103,15 @@ rejected instead of overwritten.
 metadata/license/source/hash validation with `require_clean=True`:
 
 ```bash
-python tools/prepare_release.py check-tag --tag v0.3.2
+python tools/prepare_release.py check-tag --tag v0.3.3
 python tools/prepare_release.py assemble \
-  --tag v0.3.2 \
+  --tag v0.3.3 \
   --incoming-dir /tmp/lumina-svg-incoming \
   --output-dir /tmp/lumina-svg-release
 ```
 
-The tag must exist on HEAD, equal the version declared in both `pyproject.toml`
+These are post-merge release commands, not permission to tag or publish the
+unreleased 0.3.3 candidate. The tag must exist on HEAD, equal the version declared in both `pyproject.toml`
 and CMake, and be reachable from `origin/dev-refactor`. Fetch the current remote
 branch and tags before a local release check. Incoming downloads and output
 must be outside the source checkout. Keep the four wheel bundles and the sdist
@@ -143,39 +144,42 @@ no compiler; source builds still require the documented toolchain.
 
 ## Consumer installation / 使用者安装
 
-After 0.3.2 is available on PyPI, the standard command is:
+The current public PyPI release is 0.3.2:
 
 ```bash
 python -m pip install lumina-svg-core==0.3.2
 ```
 
-Until publication is confirmed by the
-[PyPI version page](https://pypi.org/project/lumina-svg-core/0.3.2/) and
-[publishing workflow](https://github.com/lumina-layer-studio/lumina-svg-core/actions/workflows/publish.yml),
-the README's exact 0.3.1 GitHub `--find-links` command remains the public fallback.
-Either matching prebuilt wheel installs without
+The [PyPI version page](https://pypi.org/project/lumina-svg-core/0.3.2/) and
+[completed publishing run](https://github.com/lumina-layer-studio/lumina-svg-core/actions/runs/38667556094)
+record the release. A matching prebuilt wheel installs without
 a third-party checkout, manual patch, local wheelhouse, or C++ compiler.
 Native-library source builds are a contributor workflow, not a prerequisite
 for using the library from a Python application source checkout. This project
 ships the native library; it does not ship a Lumina application installer.
 
-0.3.2 正式出现在 PyPI 并通过发布验证后，可使用标准安装命令；在此之前使用 README
-中保留的 0.3.1 GitHub 备用命令。匹配的预编译 wheel 无需额外克隆第三方库、
+0.3.2 已在 PyPI 发布并完成安装验证，可使用上面的标准命令。
+匹配的预编译 wheel 无需额外克隆第三方库、
 手工打补丁、准备本地 wheelhouse 或编译 C++。原生库源码构建属于贡献者工作流，
 不是从 Python 应用源码调用本库的前置要求；本项目也不分发 Lumina 整套软件安装器。
 
-On 2026-10-15, public release `v0.3.1` provides all 12 wheels in the table above.
-Binary-only resolution and download of both the library and NumPy succeeds
-for all 12 target combinations. A fresh macOS arm64 / CPython 3.12 environment
-installs that public wheel with build tools absent and exercises actual
-alpha-composited polygon/hole output. This is a public-release installation
-check, not a claim that an unmerged refactor is already released. Cross-target
-downloads do not replace each platform's native CI execution.
+On 2026-10-15, 0.3.2 was published from reviewed commit
+`6fc720451f64a3d3d239261bf924b37966bf6ba3`, after PRs #3 and #4 were merged
+with owner approval. All twelve wheels and the source archive are public.
+The publishing run completed all platform builds/tests, source rebuilding,
+upload and a fresh Linux PyPI install/runtime smoke. A separate fresh macOS
+arm64 environment also installed the published binary and exercised alpha,
+holes and read-only arrays without a compiler.
 
-2026-10-15 已核对公开的 `v0.3.1`：12 组目标均可解析依赖并下载完整二进制 wheel，
-包括 NumPy。全新的 macOS arm64 / CPython 3.12 环境无需构建工具即可安装，
-并实际解析透明叠色、多边形和孔洞。这验证的是已发布版本，不代表未合入重构已发布；
-跨平台下载检查不能代替各平台 CI 的实际运行。
+The new 0.3.3 source version is an unreleased candidate. Its CI/source artifacts
+are for review; they do not replace 0.3.2 or change the ordinary PyPI route.
+It needs a separately reviewed merge and release decision before tagging/upload.
+
+2026-10-15，PR #3 和 #4 经授权合入后，已从上述提交发布 0.3.2：12 个 wheel 和
+源码包均已公开。发布工作流完成各平台构建测试、源码重建、上传及全新 Linux 环境的
+PyPI 安装和实际几何烟测；另一个全新 macOS arm64 环境也无需编译器安装并验证透明度、
+孔洞及只读数组。0.3.3 仍是未发布候选，CI 安装包仅供审阅，不覆盖 0.3.2 或改变
+普通 PyPI 安装方式；后续合入、打标签和发布需单独决定。
 
 ## PyPI publisher and release gate / PyPI 发布身份与门禁
 
@@ -197,18 +201,20 @@ alone does not grant PyPI ownership. See
 | Workflow filename | `publish.yml` |
 | GitHub environment | `pypi` |
 
-The pending publisher and GitHub environment are configured for this candidate.
-That authorizes a future upload; it does not publish the PyPI project or version.
-Confirm actual availability using the version page and completed workflow above.
+This Trusted Publisher and GitHub environment were used to publish 0.3.2.
+Their continued configuration does not authorize merging or publishing a new
+candidate. Confirm each actual release using its version page and completed
+workflow.
 
 The GitHub `pypi` environment accepts `v*` tags and uses the maintainer
 `MOVIBALE` as required reviewer. Self-review is permitted for the sole maintainer.
 This asks for one formal upload approval after the release packages are prepared;
 ordinary builds and end-user installation need no publishing authorization.
 
-1. A human merges recorder refactor PR #3, then the separate 0.3.2 release PR,
-   after their checks pass. Neither workflow merges a PR automatically.
-2. Create `v0.3.2` only on the resulting reviewed, clean release commit already
+1. Obtain maintainer approval and merge the new version's reviewed PR after
+   its checks pass. Neither workflow merges a PR automatically. Prior approval
+   for PRs #3/#4 is not approval for another version.
+2. Create the matching version tag only on the reviewed, clean release commit already
    merged into `dev-refactor`. Never tag an unmerged topic branch for upload.
 3. A `v*` tag push starts `publish.yml`. Manual dispatch must also select the
    actual version tag: default/topic branch dispatch is rejected. The checked-out
@@ -228,9 +234,10 @@ ordinary builds and end-user installation need no publishing authorization.
    analysis, read-only int64 coordinates and float64 RGBA. An install or functional
    failure fails the job; no arbitrary retry masks it.
 
-本候选已登记以上精确匹配的待用可信发布者，也已配置仅接受 `v*` 标签的 `pypi` 环境。
-授权配置完成不代表项目或版本已经上传；实际可用状态仍以版本页面和工作流为准。
+上述可信发布者和仅接受 `v*` 标签的 `pypi` 环境已用于发布 0.3.2。
+配置继续存在不等于授权新候选合入或发布；实际可用状态仍以版本页面和工作流为准。
 维护者 `MOVIBALE` 在完整制品通过检查后进行一次正式上传批准；普通构建和用户安装
-无需额外发布授权。先人工合入 PR #3 和发行 PR，再对干净、已合入的提交创建新标签。
+无需额外发布授权。新版本先取得维护者授权、完成审查和 CI，再合入并为干净提交创建对应标签；
+此前 PR #3/#4 的许可不自动延伸到新候选。
 分支手动触发不能上传；只有最后上传任务获得 OIDC 权限，随后从 PyPI 的全新安装
 必须通过实际二维几何烟测。不要把候选构建或未合入分支描述成已经公开的 PyPI 发行。
