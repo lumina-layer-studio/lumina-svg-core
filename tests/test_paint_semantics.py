@@ -94,6 +94,148 @@ def geometry_index_with_bounds(result, collection, expected_bounds):
     return matches[0]
 
 
+def assert_valid_integer_components(collection) -> None:
+    """Check exported topology without losing the integer area signs."""
+    shapes = shapely.from_ragged_array(
+        shapely.GeometryType.MULTIPOLYGON,
+        collection.coordinates.astype(np.float64),
+        (
+            collection.ring_offsets,
+            collection.polygon_offsets,
+            collection.geometry_offsets,
+        ),
+    )
+    for shape in shapes:
+        assert shape.is_valid, shapely.is_valid_reason(shape)
+        polygons = list(shape.geoms)
+        assert all(polygon.is_valid for polygon in polygons)
+        for index, polygon in enumerate(polygons):
+            for other in polygons[index + 1:]:
+                assert polygon.intersection(other).area == 0.0
+
+    for start, end in zip(
+        collection.polygon_offsets[:-1],
+        collection.polygon_offsets[1:],
+        strict=True,
+    ):
+        shell_index = int(start)
+        twice_component_area = 0
+        for ring_index in range(shell_index, int(end)):
+            point_start = int(collection.ring_offsets[ring_index])
+            point_end = int(collection.ring_offsets[ring_index + 1])
+            points = collection.coordinates[point_start:point_end].tolist()
+            twice_ring_area = sum(
+                first[0] * second[1] - first[1] * second[0]
+                for first, second in zip(points, points[1:])
+            )
+            if ring_index == shell_index:
+                assert twice_ring_area > 0
+                assert collection.hole_parent[ring_index] == -1
+            else:
+                assert twice_ring_area < 0
+                assert collection.hole_parent[ring_index] == shell_index
+            twice_component_area += twice_ring_area
+        assert twice_component_area > 0
+
+
+@pytest.mark.parametrize("opacity", [1.0, 0.5, 0.25])
+def test_nearly_singular_fill_has_nonoverlapping_shell_hierarchy(
+    opacity: float,
+) -> None:
+    result = lumina_svg_core.analyze_svg_svg(
+        '<svg xmlns="http://www.w3.org/2000/svg" '
+        'viewBox="0 0 100 100" width="100" height="100">'
+        '<path transform="matrix(1 1 0 0.0000000001 50 50)" '
+        f'fill="#ff0000" fill-opacity="{opacity}" '
+        'd="M7 -1L-6 -3L-5 1L6 4L6 -6L-3 2L-1 -1L10 100000000000Z"/>'
+        '</svg>',
+        target_width_mm=100.0,
+        tolerance_mm=0.02,
+        allow_strokes=True,
+    )
+
+    assert result.status == "supported", result.reason_code
+    assert result.reason_code == ""
+    assert result.unprintable_fragments.count == 0
+    grid_step_mm = result.grid_to_source_unit * result.scale_factor
+    assert result.max_quantization_error_mm == pytest.approx(
+        grid_step_mm / np.sqrt(2.0), rel=1e-15,
+    )
+    assert (result.max_flattening_error_mm
+            + result.max_quantization_error_mm) <= 0.6 * 0.02
+    for name in ("raw", "visible", "silhouette"):
+        collection = getattr(result, name)
+        assert_valid_integer_components(collection)
+        assert collection.geometry_count == 1
+        assert collection.component_count == 1
+        assert collection.hole_count == 0
+        assert collection.draw_indices.tolist() == [0]
+        if name == "silhouette":
+            assert collection.source_indices.tolist() == [-1]
+            assert collection.source_kinds.tolist() == [2]
+            assert collection.rgba.tolist() == [[0, 0, 0, 255]]
+            assert collection.rgba_f64[0] == pytest.approx((0, 0, 0, 1))
+            assert collection.contributor_offsets.tolist() == [0, 0]
+        else:
+            assert collection.source_indices.tolist() == [1]
+            assert collection.source_kinds.tolist() == [0]
+            assert collection.rgba.tolist() == [
+                [255, 0, 0, round(255 * opacity)]
+            ]
+            assert collection.rgba_f64[0] == pytest.approx(
+                (1, 0, 0, opacity), abs=1e-15,
+            )
+            assert geometry_contributors(collection, 0) == pytest.approx(
+                [(0, 1, 0, opacity)]
+            )
+
+
+@pytest.mark.parametrize("opacity", [1.0, 0.5, 0.25])
+def test_self_touch_and_t_contact_keep_independent_shells_and_holes(
+    opacity: float,
+) -> None:
+    # Two holed squares share one corner; a triangle meets an edge interior.
+    result = lumina_svg_core.analyze_svg_svg(
+        "<svg viewBox='0 0 60 60'>"
+        f"<path fill='red' fill-opacity='{opacity}' "
+        "d='M10 10H30V30H10Z M15 15V20H20V15Z "
+        "M30 30H50V50H30Z M35 35V40H40V35Z "
+        "M20 10L15 0L25 0Z'/></svg>",
+        target_width_mm=60.0,
+        tolerance_mm=0.02,
+    )
+
+    assert result.status == "supported", result.reason_code
+    assert result.reason_code == ""
+    assert result.unprintable_fragments.count == 0
+    assert (result.max_flattening_error_mm
+            + result.max_quantization_error_mm) <= 0.6 * 0.02
+    for name in ("raw", "visible", "silhouette"):
+        collection = getattr(result, name)
+        assert_valid_integer_components(collection)
+        assert collection.geometry_count == 1
+        assert collection.component_count == 3
+        assert collection.hole_count == 2
+        shape = geometry_shape(result, collection, 0)
+        assert sorted(polygon.area for polygon in shape.geoms) == pytest.approx(
+            [50.0, 375.0, 375.0], abs=1e-8,
+        )
+        assert collection.draw_indices.tolist() == [0]
+        if name == "silhouette":
+            assert collection.source_indices.tolist() == [-1]
+            assert collection.source_kinds.tolist() == [2]
+            assert collection.rgba_f64[0] == pytest.approx((0, 0, 0, 1))
+        else:
+            assert collection.source_indices.tolist() == [1]
+            assert collection.source_kinds.tolist() == [0]
+            assert collection.rgba_f64[0] == pytest.approx(
+                (1, 0, 0, opacity), abs=1e-15,
+            )
+            assert geometry_contributors(collection, 0) == pytest.approx(
+                [(0, 1, 0, opacity)]
+            )
+
+
 def test_transparent_canvas_source_over_reference_contract() -> None:
     reference = json.loads(
         (FIXTURES / "alpha_source_over_reference.json").read_text(
