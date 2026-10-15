@@ -995,7 +995,8 @@ struct NodingStats {
   double DisplacementBound() const {
     uint64_t high = displaced_passes;
     int shift = 0;
-    while (high > (uint64_t{1} << std::numeric_limits<double>::digits)) {
+    // Reserve an exactly representable integer for the ceiling carry below.
+    while (high >= (uint64_t{1} << std::numeric_limits<double>::digits)) {
       high >>= 1;
       ++shift;
     }

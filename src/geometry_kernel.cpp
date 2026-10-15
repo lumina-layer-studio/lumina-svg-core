@@ -3282,10 +3282,11 @@ void appendPolyTree(GeometryCollection& collection, const PolyTree64& tree,
 // vertex, a vertex sitting on a non-adjacent edge, a collinear run shared by
 // two rings, a genuine crossing, a hole that connects to the shell in two
 // places and pinches the region apart. OGC consumers reject every one of
-// those, so exported boundaries go through the shared canonical rule: the same
-// linework and the same filled region, emitted as the filled faces, which meet
-// only along their boundaries, with the shell/hole hierarchy rebuilt from
-// containment and nesting parity. A union that is already canonical is emitted
+// those, so exported boundaries go through the shared canonical rule: settled
+// grid linework is emitted as filled faces meeting only along their boundaries,
+// with the shell/hole hierarchy rebuilt from containment and nesting parity.
+// Quantized cuts can bend segments; their cumulative boundary displacement is
+// charged to the physical error budget. An already canonical union is emitted
 // directly, unchanged.
 void appendCanonicalNode(GeometryCollection& collection,
                          const lumina::canonical::CanonicalNode<int64_t>& node,

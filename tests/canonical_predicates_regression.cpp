@@ -249,6 +249,16 @@ bool RequireCumulativeDisplacementBound() {
   stats.displaced_passes = (uint64_t{1} << 53) + 1;
   ok &= Require(stats.DisplacementBound() == std::ldexp(1.0, 53) + 2,
                 "large-integer-displacement-bound-rounds-upward");
+  for (int power = 54; power <= 63; ++power) {
+    stats.displaced_passes = (uint64_t{1} << power) + 1;
+    const auto exact_power = std::ldexp(1.0, power);
+    ok &= Require(stats.DisplacementBound() == std::nextafter(
+                      exact_power, std::numeric_limits<double>::infinity()),
+                  "displacement-above-large-power-rounds-upward");
+    stats.displaced_passes = uint64_t{1} << power;
+    ok &= Require(stats.DisplacementBound() == exact_power,
+                  "exact-power-displacement-bound-is-unchanged");
+  }
   stats.displaced_passes = std::numeric_limits<uint64_t>::max();
   ok &= Require(stats.DisplacementBound() == std::ldexp(1.0, 64),
                 "maximum-displacement-count-rounds-upward");
