@@ -165,6 +165,70 @@ def test_complete_release_preserves_thirteen_packages_and_hash_receipt(
     assert "distribution.json" not in delivered
 
 
+def test_failed_release_copy_cleans_up_and_can_be_retried(
+    release_repo: Path, incoming: Path, tmp_path: Path,
+) -> None:
+    output = tmp_path / "release"
+    before = set(output.parent.iterdir())
+    injection = """
+import pathlib
+import runpy
+import sys
+
+tool = pathlib.Path(sys.argv[1])
+output_parent = pathlib.Path(sys.argv[2]).resolve()
+sys.argv = [str(tool), *sys.argv[3:]]
+sys.path.insert(0, str(tool.parent))
+copied_wheels = 0
+
+def fail_release_copy(event, arguments):
+    global copied_wheels
+    if event == "shutil.copyfile":
+        destination = pathlib.Path(arguments[1]).resolve()
+        if destination.is_relative_to(output_parent) and destination.suffix == ".whl":
+            copied_wheels += 1
+            if copied_wheels == 2:
+                raise OSError("injected release-copy I/O failure")
+
+sys.addaudithook(fail_release_copy)
+runpy.run_path(str(tool), run_name="__main__")
+"""
+    failed = subprocess.run(
+        [sys.executable, "-c", injection,
+         str(release_repo / "tools/prepare_release.py"), str(output.parent),
+         "assemble", "--tag", FIXTURE_TAG, "--incoming-dir", str(incoming),
+         "--output-dir", str(output)],
+        cwd=release_repo, capture_output=True, text=True, encoding="utf-8",
+    )
+    assert failed.returncode != 0
+    assert "injected release-copy I/O failure" in failed.stderr
+    assert not output.exists()
+    assert set(output.parent.iterdir()) == before
+
+    retried = _assemble(release_repo, incoming, output)
+    assert retried.returncode == 0, retried.stderr
+    assert len(list((output / "packages").iterdir())) == 13
+    assert (output / "distribution.json").is_file()
+    assert set(output.parent.iterdir()) == before | {output}
+
+
+def test_existing_release_output_is_not_overwritten(
+    release_repo: Path, incoming: Path, tmp_path: Path,
+) -> None:
+    output = tmp_path / "release"
+    output.mkdir()
+    sentinel = output / "keep.txt"
+    sentinel.write_bytes(b"existing release output")
+    before = set(output.parent.iterdir())
+    result = _assemble(release_repo, incoming, output)
+    assert result.returncode != 0
+    assert "already exists" in result.stderr
+    assert {path.name: path.read_bytes() for path in output.iterdir()} == {
+        "keep.txt": b"existing release output",
+    }
+    assert set(output.parent.iterdir()) == before
+
+
 def test_tag_check_reports_declared_version_and_actual_head(release_repo: Path) -> None:
     result = _release(release_repo, "check-tag")
     assert result.returncode == 0, result.stderr

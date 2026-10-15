@@ -153,7 +153,15 @@ def assemble_release(tag: str, incoming: Path, output: Path) -> Path:
         _check_targets(receipt, version)
         _check_receipts(incoming, paths, receipt)
         receipt_path.rename(checked / "distribution.json")
-        shutil.copytree(checked, output)
+        output.parent.mkdir(parents=True, exist_ok=True)
+        with tempfile.TemporaryDirectory(
+            prefix=f".{output.name}-", dir=output.parent,
+        ) as sibling:
+            complete = Path(sibling) / "release"
+            shutil.copytree(checked, complete)
+            if output.exists():
+                raise ValueError("release output already exists; use a new directory")
+            complete.rename(output)
     return output / "distribution.json"
 
 
