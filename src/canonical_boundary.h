@@ -4,8 +4,9 @@
 //
 // The rule: a painted region is expressed as simple rings with a shell/hole
 // hierarchy rebuilt from containment and nesting parity. The region itself is
-// taken from the integer linework, so noded re-expression cannot move filled
-// area - it only removes self-contact that downstream OGC/GEOS consumers reject.
+// taken from integer linework. Quantized cuts can bend its segments; the
+// accumulated boundary displacement is certified in grid units while removing
+// self-contact that downstream OGC/GEOS consumers reject.
 //
 // Boundary forms with defined handling:
 //   * a ring that visits one vertex twice (two lobes joined at a point),
@@ -27,6 +28,7 @@
 #include <limits>
 #include <memory>
 #include <numeric>
+#include <type_traits>
 #include <unordered_map>
 #include <utility>
 #include <vector>
@@ -105,12 +107,12 @@ inline int Compare(const Product& left, const Product& right) {
   return 0;
 }
 
-inline Product Multiply(int64_t left, int64_t right) {
-  const bool negative = (left < 0) != (right < 0);
-  const auto a = left < 0 ? ~static_cast<uint64_t>(left) + 1
-                          : static_cast<uint64_t>(left);
-  const auto b = right < 0 ? ~static_cast<uint64_t>(right) + 1
-                           : static_cast<uint64_t>(right);
+struct UnsignedProduct {
+  uint64_t high;
+  uint64_t low;
+};
+
+inline UnsignedProduct MultiplyUnsigned(uint64_t a, uint64_t b) {
   const auto a0 = a & 0xffffffffULL;
   const auto a1 = a >> 32;
   const auto b0 = b & 0xffffffffULL;
@@ -123,7 +125,20 @@ inline Product Multiply(int64_t left, int64_t right) {
       (p00 >> 32) + (p01 & 0xffffffffULL) + (p10 & 0xffffffffULL);
   const auto low = (middle << 32) | (p00 & 0xffffffffULL);
   const auto high = p11 + (p01 >> 32) + (p10 >> 32) + (middle >> 32);
-  if (!negative) return {static_cast<int64_t>(high), low};
+  return {high, low};
+}
+
+inline uint64_t Magnitude(int64_t value) {
+  return value < 0 ? ~static_cast<uint64_t>(value) + 1
+                   : static_cast<uint64_t>(value);
+}
+
+inline Product Multiply(int64_t left, int64_t right) {
+  const bool negative = (left < 0) != (right < 0);
+  const auto product = MultiplyUnsigned(Magnitude(left), Magnitude(right));
+  if (!negative) return {static_cast<int64_t>(product.high), product.low};
+  const auto low = product.low;
+  const auto high = product.high;
   const auto negated = ~low + 1;
   return {static_cast<int64_t>(~high + (negated == 0 ? 1 : 0)), negated};
 }
@@ -159,17 +174,14 @@ inline long double Value(const Product& value) {
 // Every partial sum therefore fits signed 192 bits. All limb arithmetic is
 // unsigned, including sign extension and carry, so it needs no __int128 or
 // signed overflow. Conversion happens only after exact cancellation.
-struct AreaSum {
+struct Signed192 {
   static_assert(sizeof(std::size_t) <= sizeof(uint64_t));
   std::array<uint64_t, 3> limbs{};
 
-  void Add(const Product& term) {
-    const std::array<uint64_t, 3> extended{
-        term.low, static_cast<uint64_t>(term.high),
-        term.high < 0 ? std::numeric_limits<uint64_t>::max() : uint64_t{0}};
+  void Add(const Signed192& term) {
     uint64_t carry = 0;
     for (std::size_t index = 0; index < limbs.size(); ++index) {
-      const auto sum = limbs[index] + extended[index];
+      const auto sum = limbs[index] + term.limbs[index];
       const auto carried = sum + carry;
       carry = static_cast<uint64_t>(sum < limbs[index])
           + static_cast<uint64_t>(carried < sum);
@@ -177,24 +189,31 @@ struct AreaSum {
     }
   }
 
+  void Add(const Product& term) {
+    Add(Signed192{{term.low, static_cast<uint64_t>(term.high),
+                 term.high < 0 ? std::numeric_limits<uint64_t>::max()
+                               : uint64_t{0}}});
+  }
+
   int Sign() const {
     if ((limbs.back() >> 63) != 0) return -1;
     return limbs[0] != 0 || limbs[1] != 0 || limbs[2] != 0 ? 1 : 0;
   }
 
-  AreaSum Magnitude() const {
-    if (Sign() >= 0) return *this;
-    AreaSum magnitude;
+  Signed192 Negated() const {
+    Signed192 result;
     uint64_t carry = 1;
     for (std::size_t index = 0; index < limbs.size(); ++index) {
-      magnitude.limbs[index] = ~limbs[index] + carry;
-      carry = static_cast<uint64_t>(magnitude.limbs[index] < carry);
+      result.limbs[index] = ~limbs[index] + carry;
+      carry = static_cast<uint64_t>(result.limbs[index] < carry);
     }
-    return magnitude;
+    return result;
   }
+
+  Signed192 Magnitude() const { return Sign() < 0 ? Negated() : *this; }
 };
 
-inline int CompareLimbs(const AreaSum& left, const AreaSum& right) {
+inline int CompareLimbs(const Signed192& left, const Signed192& right) {
   for (std::size_t index = left.limbs.size(); index-- > 0;) {
     if (left.limbs[index] != right.limbs[index]) {
       return left.limbs[index] < right.limbs[index] ? -1 : 1;
@@ -203,18 +222,18 @@ inline int CompareLimbs(const AreaSum& left, const AreaSum& right) {
   return 0;
 }
 
-inline int Compare(const AreaSum& left, const AreaSum& right) {
+inline int Compare(const Signed192& left, const Signed192& right) {
   const bool left_negative = left.Sign() < 0;
   const bool right_negative = right.Sign() < 0;
   if (left_negative != right_negative) return left_negative ? -1 : 1;
   return CompareLimbs(left, right);
 }
 
-inline int CompareMagnitude(const AreaSum& left, const AreaSum& right) {
+inline int CompareMagnitude(const Signed192& left, const Signed192& right) {
   return CompareLimbs(left.Magnitude(), right.Magnitude());
 }
 
-inline long double Value(const AreaSum& area) {
+inline long double Value(const Signed192& area) {
   const auto magnitude = area.Magnitude();
   long double value = 0;
   for (std::size_t index = magnitude.limbs.size(); index-- > 0;) {
@@ -222,6 +241,85 @@ inline long double Value(const AreaSum& area) {
         + static_cast<long double>(magnitude.limbs[index]);
   }
   return area.Sign() < 0 ? -value : value;
+}
+
+inline Signed192 ScaledProduct(int64_t factor, const Product& product) {
+  const auto magnitude = Signed192{{product.low,
+      static_cast<uint64_t>(product.high),
+      product.high < 0 ? std::numeric_limits<uint64_t>::max() : uint64_t{0}}}
+      .Magnitude();
+  const auto low = MultiplyUnsigned(Magnitude(factor), magnitude.limbs[0]);
+  const auto high = MultiplyUnsigned(Magnitude(factor), magnitude.limbs[1]);
+  const auto middle = low.high + high.low;
+  Signed192 result{{low.low, middle,
+                  high.high + static_cast<uint64_t>(middle < low.high)}};
+  return (factor < 0) != (product.Sign() < 0) ? result.Negated() : result;
+}
+
+inline Signed192 Doubled(Signed192 value) {
+  for (std::size_t index = value.limbs.size(); index-- > 0;) {
+    value.limbs[index] = (value.limbs[index] << 1)
+        | (index == 0 ? uint64_t{0} : value.limbs[index - 1] >> 63);
+  }
+  return value;
+}
+
+inline Signed192 Difference(Signed192 left, const Signed192& right) {
+  left.Add(right.Negated());
+  return left;
+}
+
+// Each coordinate is N/D, D > 0. Native coordinates are below 2^49, so
+// |N| < 2^152; the public <= 2^52 domain gives |N| < 2^161. Three unsigned
+// limbs preserve cancellation and cell certification without signed overflow.
+inline bool RoundingCellContains(const Signed192& numerator,
+                                const Product& denominator,
+                                int64_t candidate) {
+  const auto error = Difference(numerator, ScaledProduct(candidate, denominator));
+  const auto divisor = ScaledProduct(1, denominator);
+  const int order = CompareLimbs(Doubled(error.Magnitude()), divisor);
+  return order < 0 || (order == 0 && error.Sign() == -numerator.Sign());
+}
+
+inline int64_t RoundedQuotient(const Signed192& numerator,
+                               const Product& denominator) {
+  const auto magnitude = numerator.Magnitude();
+  const auto divisor = ScaledProduct(1, denominator);
+  Signed192 quotient;
+  Signed192 remainder;
+  for (std::size_t bit = 192; bit-- > 0;) {
+    remainder = Doubled(remainder);
+    remainder.limbs[0] |= (magnitude.limbs[bit / 64] >> (bit % 64)) & 1;
+    if (CompareLimbs(remainder, divisor) >= 0) {
+      remainder = Difference(remainder, divisor);
+      quotient.limbs[bit / 64] |= uint64_t{1} << (bit % 64);
+    }
+  }
+  if (CompareLimbs(remainder, Difference(divisor, remainder)) >= 0) {
+    quotient.Add(Product{0, 1});
+  }
+  // A segment intersection stays between its bounded integer endpoints, so
+  // the rounded magnitude fits int64 and never reaches its minimum value.
+  const auto result = static_cast<int64_t>(quotient.limbs[0]);
+  return numerator.Sign() < 0 ? -result : result;
+}
+
+inline int64_t CertifiedRoundedCoordinate(const Signed192& numerator,
+                                          const Product& denominator,
+                                          int64_t candidate) {
+  return RoundingCellContains(numerator, denominator, candidate)
+      ? candidate : RoundedQuotient(numerator, denominator);
+}
+
+inline int64_t RoundedCoordinate(int64_t origin, int64_t direction,
+                                 const Product& parameter,
+                                 const Product& denominator) {
+  auto numerator = ScaledProduct(origin, denominator);
+  numerator.Add(ScaledProduct(direction, parameter));
+  const auto t = Value(parameter) / Value(denominator);
+  const auto candidate = static_cast<int64_t>(std::llround(
+      static_cast<long double>(origin) + t * static_cast<long double>(direction)));
+  return CertifiedRoundedCoordinate(numerator, denominator, candidate);
 }
 
 }  // namespace wide
@@ -254,6 +352,15 @@ struct IntersectionMath {
   }
   static int Sign(Wide value) { return value > 0 ? 1 : (value < 0 ? -1 : 0); }
   static long double Value(Wide value) { return value; }
+  static PointOf<Coord> Intersection(const PointOf<Coord>& origin,
+                                     const PointOf<Coord>& direction,
+                                     Wide numerator, Wide denominator) {
+    const auto t = Value(numerator) / Value(denominator);
+    return {Domain<Coord>::Quantize(static_cast<long double>(origin.x)
+                                    + t * static_cast<long double>(direction.x)),
+            Domain<Coord>::Quantize(static_cast<long double>(origin.y)
+                                    + t * static_cast<long double>(direction.y))};
+  }
 };
 
 template <>
@@ -274,6 +381,12 @@ struct IntersectionMath<int64_t> {
   }
   static int Sign(Wide value) { return value.Sign(); }
   static long double Value(Wide value) { return wide::Value(value); }
+  static PointOf<int64_t> Intersection(const PointOf<int64_t>& origin,
+                                       const PointOf<int64_t>& direction,
+                                       Wide numerator, Wide denominator) {
+    return {wide::RoundedCoordinate(origin.x, direction.x, numerator, denominator),
+            wide::RoundedCoordinate(origin.y, direction.y, numerator, denominator)};
+  }
 };
 
 // Preserve the continuous compensation domain's arithmetic while retaining
@@ -303,7 +416,7 @@ struct AreaMath {
 
 template <>
 struct AreaMath<int64_t> {
-  using Wide = wide::AreaSum;
+  using Wide = wide::Signed192;
 
   static Wide Area(const PathOf<int64_t>& path) {
     Wide area;
@@ -474,7 +587,8 @@ class BoundsIndex {
 // Node a ring set: split every segment at each intersection it takes part in,
 // including T contacts and collinear overlaps, so emitted paths meet only at
 // shared endpoints. A computed crossing lands on the domain grid, so callers
-// re-node the quantized result before using it (standard snap rounding).
+// re-node the quantized result before using it. This is repeated nearest-grid
+// noding, with a certified displacement, rather than full hot-pixel rounding.
 template <typename Coord>
 class BoundaryNoder {
  public:
@@ -497,6 +611,7 @@ class BoundaryNoder {
 
   // The input already met only at shared endpoints: nothing had to be split.
   bool AlreadyNoded() const { return already_noded_; }
+  bool Displaced() const { return displaced_; }
 
   // Whether the ring set is already a legal boundary expression of the region
   // it encloses, so it can be exported as it stands. OGC consumers accept a
@@ -571,6 +686,13 @@ class BoundaryNoder {
   // add nothing: the emitted path already carries every segment's start.
   void AddCut(Segment& segment, std::size_t node) {
     if (node == segment.a || node == segment.b) return;
+    if constexpr (std::is_same_v<Coord, int64_t>) {
+      if (!displaced_
+          && Math::Sign(Math::Cross(nodes_[node] - nodes_[segment.a],
+                                    nodes_[segment.b] - nodes_[segment.a])) != 0) {
+        displaced_ = true;
+      }
+    }
     segment.cuts.push_back({Along(segment, node), node});
     already_noded_ = false;
     // The point is inside this segment but is not one of its ends: the ring
@@ -633,14 +755,7 @@ class BoundaryNoder {
     else if (Math::Sign(numerator_b) == 0) node = b.a;
     else if (Math::Compare(numerator_b, denominator) == 0) node = b.b;
     else {
-      const auto t = Math::Value(numerator_a) / Math::Value(denominator);
-      node = NodeFor(PointOf<Coord>{
-          Domain<Coord>::Quantize(
-              static_cast<long double>(origin.x)
-              + t * static_cast<long double>(direction.x)),
-          Domain<Coord>::Quantize(
-              static_cast<long double>(origin.y)
-              + t * static_cast<long double>(direction.y))});
+      node = NodeFor(Math::Intersection(origin, direction, numerator_a, denominator));
       already_noded_ = false;
     }
     AddCut(a, node);
@@ -744,6 +859,7 @@ class BoundaryNoder {
   std::vector<std::size_t> last_ring_;
   std::unordered_map<std::size_t, std::vector<std::size_t>> shared_uses_;
   bool already_noded_ = true;
+  bool displaced_ = false;
   bool self_revisit_ = false;
   bool multi_contact_ = false;
   bool unshared_contact_ = false;
@@ -872,26 +988,65 @@ inline void BuildRingTree(std::vector<SimpleRing<Coord>> rings,
   }
 }
 
-// Node linework until it settles: quantized crossings can introduce contacts
-// that the next pass splits, and two passes suffice for the engine grid.
+struct NodingStats {
+  uint64_t displaced_passes = 0;
+
+  // Round the integer bound upward even when a double cannot represent it.
+  double DisplacementBound() const {
+    uint64_t high = displaced_passes;
+    int shift = 0;
+    while (high > (uint64_t{1} << std::numeric_limits<double>::digits)) {
+      high >>= 1;
+      ++shift;
+    }
+    if (shift != 0 && (displaced_passes & ((uint64_t{1} << shift) - 1)) != 0) {
+      ++high;
+    }
+    return std::ldexp(static_cast<double>(high), shift);
+  }
+};
+
+// Integer linework settles after finitely many productive passes: exact nearest
+// rounding is monotone in both axes, and exact projection orders distinct cuts
+// strictly. Each old segment retains its integer L1 length. Each productive
+// pass adds a nonzero edge occurrence; their count is bounded by initial L1
+// length. Adjacent duplicates/closure repeats are skipped by the constructor.
+// A strict crossing cannot round to both segments' ends unless those ends
+// coincide, contradicting a strict crossing, so a productive pass cannot stall.
+// Floating compensation retains its existing two-pass policy.
 // `already_canonical`, when asked for, reports that the input was already a
 // legal boundary expression of its region, so a caller can keep emitting it as
 // it stands instead of re-expressing it.
 template <typename Coord>
 inline std::vector<PathOf<Coord>> NodeToGrid(
     const std::vector<PathOf<Coord>>& paths,
-    bool* already_canonical = nullptr) {
+    bool* already_canonical = nullptr,
+    NodingStats* stats = nullptr) {
+  if (stats != nullptr) *stats = {};
   std::vector<PathOf<Coord>> current = paths;
-  for (int pass = 0; pass < 2; ++pass) {
+  bool first_pass = true;
+  unsigned continuous_passes = 0;
+  for (;;) {
     BoundaryNoder<Coord> noder(current);
     auto noded = noder.Run();
-    if (pass == 0 && already_canonical != nullptr) {
+    if (first_pass && already_canonical != nullptr) {
       *already_canonical = noder.Canonical();
+    }
+    if constexpr (std::is_same_v<Coord, int64_t>) {
+      // Every new cut is within sqrt(1/2) of its exact intersection. The
+      // connected chain stays in the old segment's capsule and projects over
+      // the whole segment, bounding both Hausdorff directions by one grid unit.
+      // Sum only displaced passes; collinear/end-point splits have zero error.
+      // Growth of nonzero edges in one size_t vector also bounds this counter.
+      if (stats != nullptr && noder.Displaced()) ++stats->displaced_passes;
     }
     if (noder.AlreadyNoded()) return noded;
     current = std::move(noded);
+    first_pass = false;
+    if constexpr (!std::is_same_v<Coord, int64_t>) {
+      if (++continuous_passes == 2) return current;
+    }
   }
-  return current;
 }
 
 // Canonical rings from an already noded path set.

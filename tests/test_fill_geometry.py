@@ -629,6 +629,41 @@ def test_non_uniform_transform_uses_one_model_space_error_budget() -> None:
     assert result.grid_to_source_unit > 0
 
 
+def test_canonical_noding_displacement_is_charged_once_to_physical_error() -> None:
+    # The huge viewport makes one native grid unit approximately one source
+    # unit. Clipper's union leaves a contact whose grid cut bends a segment.
+    result = lumina_svg_core.analyze_svg_svg(
+        "<svg viewBox='0 0 1000000000000 1000000000000'>"
+        "<path d='M13 6L9 5L11 16L14 0L15 20L10 8Z' fill='#b64223'/>"
+        "</svg>",
+        target_width_mm=100.0,
+        tolerance_mm=0.02,
+    )
+
+    assert result.status == "supported", result.reason_code
+    grid_step_mm = result.grid_to_source_unit * result.scale_factor
+    assert result.grid_to_source_unit == pytest.approx(1.0)
+    # Raw, visible, and silhouette each start from pre-canonical geometry.
+    # Their independent one-pass displacement is a maximum, not a sum.
+    assert result.max_quantization_error_mm / grid_step_mm == pytest.approx(
+        1.0 + 1.0 / np.sqrt(2.0), abs=1e-12,
+    )
+    assert (result.max_flattening_error_mm
+            + result.max_quantization_error_mm) <= 0.6 * 0.02
+    assert result.unprintable_fragments.count == 0
+    for name in ("raw", "visible", "silhouette"):
+        collection = getattr(result, name)
+        assert collection.component_count == 1
+        assert collection.hole_count == 1
+        areas = []
+        for start, end in zip(collection.ring_offsets[:-1],
+                              collection.ring_offsets[1:]):
+            points = collection.coordinates[int(start):int(end)].tolist()
+            areas.append(sum(a[0] * b[1] - a[1] * b[0]
+                             for a, b in zip(points, points[1:])))
+        assert areas == [100, -10]
+
+
 @pytest.mark.parametrize(
     "transform",
     [

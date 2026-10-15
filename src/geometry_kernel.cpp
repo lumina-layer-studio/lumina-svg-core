@@ -3316,7 +3316,8 @@ void appendCanonicalNode(GeometryCollection& collection,
 
 void appendCoveragePolyTree(GeometryCollection& collection,
                             const PolyTree64& tree,
-                            ComplexityBudget& complexityBudget)
+                            ComplexityBudget& complexityBudget,
+                            uint64_t& maximumNodingDisplacedPasses)
 {
     const auto paths = lumina::canonical::PolyTreePaths<int64_t>(tree);
     // Node the linework to the grid before anything judges it. Splitting a
@@ -3324,8 +3325,12 @@ void appendCoveragePolyTree(GeometryCollection& collection,
     // can meet again somewhere else; `NodeToGrid` is the shared rule's settle
     // step for that, and the face build below requires its result.
     bool already_canonical = false;
+    lumina::canonical::NodingStats nodingStats;
     const auto noded =
-        lumina::canonical::NodeToGrid<int64_t>(paths, &already_canonical);
+        lumina::canonical::NodeToGrid<int64_t>(
+            paths, &already_canonical, &nodingStats);
+    maximumNodingDisplacedPasses = std::max(
+        maximumNodingDisplacedPasses, nodingStats.displaced_passes);
     // A union whose rings are simple, non-degenerate, and meet only at shared
     // vertices - at most one per ring pair - is already a legal expression of
     // its region, so it is emitted as it stands, coordinates untouched.
@@ -3333,8 +3338,8 @@ void appendCoveragePolyTree(GeometryCollection& collection,
         appendPolyTree(collection, tree, complexityBudget);
         return;
     }
-    // Otherwise the same filled region is exported as the faces that meet only
-    // along their boundaries, which is what an OGC consumer can model.
+    // Otherwise its settled linework is exported as faces that meet only along
+    // their boundaries. Grid displacement is charged above, including collapse.
     lumina::canonical::CanonicalNode<int64_t> coverage;
     lumina::canonical::BuildFacesFromNoded<int64_t>(noded, coverage);
     appendCanonicalNode(collection, coverage, complexityBudget);
@@ -3399,6 +3404,7 @@ size_t recordPolyTreeOutput(
 bool appendGeometry(GeometryCollection& collection,
                     const PaintGeometry& geometry,
                     ComplexityBudget& complexityBudget,
+                    uint64_t& maximumNodingDisplacedPasses,
                     std::vector<Paths64>* canonicalComponents = nullptr)
 {
     if(geometry.paths.empty())
@@ -3417,7 +3423,8 @@ bool appendGeometry(GeometryCollection& collection,
     // ring without removing any filled area. Ring-count equality is therefore
     // not a validity invariant; only an empty canonical tree is a collapse.
     const size_t polygonCountBefore = collection.polygon_offsets.size();
-    appendCoveragePolyTree(collection, tree, complexityBudget);
+    appendCoveragePolyTree(collection, tree, complexityBudget,
+                           maximumNodingDisplacedPasses);
     if(collection.polygon_offsets.size() == polygonCountBefore)
         return false;
 
@@ -4715,7 +4722,8 @@ std::shared_ptr<NativeResult> buildResult(RecorderResult recording,
         result->reason_code = "unsupported_topology_dynamic_range";
         return result;
     }
-    result->max_quantization_error_mm = gridStepMm / std::sqrt(2.0);
+    const double baseQuantizationErrorMm = gridStepMm / std::sqrt(2.0);
+    result->max_quantization_error_mm = baseQuantizationErrorMm;
     result->grid_to_source_unit = gridStepMm / result->scale_factor;
     const double inputAndQuantizationErrorMm =
         maximumInputErrorSource * result->scale_factor
@@ -4784,15 +4792,31 @@ std::shared_ptr<NativeResult> buildResult(RecorderResult recording,
     const double maximumRecordedBoundaryErrorSource =
         maximumRelevantBoundaryErrorSource(
             topologyTrace, sourceBounds, recording.viewport);
-    const double maximumBoundaryErrorMm =
-        maximumRecordedBoundaryErrorSource * result->scale_factor
-        + result->max_quantization_error_mm;
-    if(!std::isfinite(maximumBoundaryErrorMm)
-            || maximumBoundaryErrorMm > toleranceMm * 0.6) {
-        result->status = "unsupported";
-        result->reason_code = "unsupported_input_precision";
+    uint64_t maximumNodingDisplacedPasses = 0;
+    const auto boundaryBudgetIsValid = [&]() {
+        const lumina::canonical::NodingStats stats{maximumNodingDisplacedPasses};
+        result->max_quantization_error_mm = baseQuantizationErrorMm;
+        if(maximumNodingDisplacedPasses != 0) {
+            const double displacementMm = std::nextafter(
+                stats.DisplacementBound() * gridStepMm,
+                std::numeric_limits<double>::infinity());
+            result->max_quantization_error_mm = std::nextafter(
+                baseQuantizationErrorMm + displacementMm,
+                std::numeric_limits<double>::infinity());
+        }
+        const double maximumBoundaryErrorMm =
+            maximumRecordedBoundaryErrorSource * result->scale_factor
+            + result->max_quantization_error_mm;
+        if(!std::isfinite(maximumBoundaryErrorMm)
+                || maximumBoundaryErrorMm > toleranceMm * 0.6) {
+            result->status = "unsupported";
+            result->reason_code = "unsupported_input_precision";
+            return false;
+        }
+        return true;
+    };
+    if(!boundaryBudgetIsValid())
         return result;
-    }
     const auto rawNormalizationStarted = std::chrono::steady_clock::now();
     result->topology_seconds = std::chrono::duration<double>(
         rawNormalizationStarted - topologyStarted).count();
@@ -4808,6 +4832,7 @@ std::shared_ptr<NativeResult> buildResult(RecorderResult recording,
             ? &paint.components : nullptr;
         if(!appendGeometry(
                 result->raw, paint, complexityBudget,
+                maximumNodingDisplacedPasses,
                 canonicalComponents)) {
             appendUnprintableFragment(
                 result->unprintable_fragments,
@@ -4820,6 +4845,8 @@ std::shared_ptr<NativeResult> buildResult(RecorderResult recording,
     const auto compositeStarted = std::chrono::steady_clock::now();
     result->normalization_raw_seconds = std::chrono::duration<double>(
         compositeStarted - rawNormalizationStarted).count();
+    if(!boundaryBudgetIsValid())
+        return result;
     if(!hasNonEmptyPaint(paints)) {
         if(!resultCensusIsValid(*result))
             throw std::runtime_error("native_result_census_failed");
@@ -4856,7 +4883,8 @@ std::shared_ptr<NativeResult> buildResult(RecorderResult recording,
     for(auto& visible : visiblePaints) {
         if(!visible.paths.empty()
                 && !appendGeometry(
-                    visibleCollection, visible, complexityBudget)) {
+                    visibleCollection, visible, complexityBudget,
+                    maximumNodingDisplacedPasses)) {
             appendUnprintableFragment(
                 result->unprintable_fragments,
                 UnprintableReason::AreaCollapse, visible);
@@ -4874,8 +4902,12 @@ std::shared_ptr<NativeResult> buildResult(RecorderResult recording,
     silhouette.source_kind = SourceKind::Silhouette;
     if(!silhouette.paths.empty()
             && !appendGeometry(
-                result->silhouette, silhouette, complexityBudget))
+                result->silhouette, silhouette, complexityBudget,
+                maximumNodingDisplacedPasses))
         throw std::runtime_error("silhouette_hierarchy_collapse");
+
+    if(!boundaryBudgetIsValid())
+        return result;
 
     if(!resultCensusIsValid(*result))
         throw std::runtime_error("native_result_census_failed");
