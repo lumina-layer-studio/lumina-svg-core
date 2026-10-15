@@ -1,0 +1,146 @@
+name: Publish PyPI release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    name: Check merged version tag
+    runs-on: ubuntu-24.04
+    outputs:
+      version: ${{ steps.release.outputs.version }}
+      source_revision: ${{ steps.release.outputs.source_revision }}
+    env:
+      RELEASE_TAG: ${{ github.ref_name }}
+      RELEASE_REF_TYPE: ${{ github.ref_type }}
+      RELEASE_SHA: ${{ github.sha }}
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: "3.12"
+      - name: Require an actual merged release tag on the checked-out commit
+        id: release
+        run: |
+          test "$RELEASE_REF_TYPE" = tag
+          test "$(git rev-parse HEAD)" = "$RELEASE_SHA"
+          python tools/prepare_release.py check-tag --tag "$RELEASE_TAG" >> "$GITHUB_OUTPUT"
+
+  build:
+    needs: validate
+    uses: ./.github/workflows/wheels.yml
+    with:
+      retention-days: 90
+
+  prepare:
+    name: Assemble and validate complete release
+    needs: [validate, build]
+    runs-on: ubuntu-24.04
+    env:
+      RELEASE_TAG: ${{ github.ref_name }}
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: "3.12"
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          pattern: lumina-svg-core-*
+          path: ${{ runner.temp }}/incoming
+          merge-multiple: false
+      - name: Check all twelve wheels, the sdist and five bundle receipts
+        env:
+          INCOMING_DIR: ${{ runner.temp }}/incoming
+          RELEASE_DIR: ${{ runner.temp }}/release
+        run: |
+          python tools/prepare_release.py assemble --tag "$RELEASE_TAG" --incoming-dir "$INCOMING_DIR" --output-dir "$RELEASE_DIR"
+          python -m pip install twine==7.0.0
+          python -m twine check --strict "$RELEASE_DIR"/packages/*
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: checked-pypi-release
+          path: ${{ runner.temp }}/release/
+          if-no-files-found: error
+          retention-days: 90
+          compression-level: 0
+
+  publish:
+    name: Upload checked packages to PyPI
+    needs: prepare
+    runs-on: ubuntu-24.04
+    environment:
+      name: pypi
+      url: https://pypi.org/p/lumina-svg-core
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: checked-pypi-release
+          path: ${{ runner.temp }}/release
+      - name: Publish packages only, retaining the receipt in GitHub artifacts
+        uses: pypa/gh-action-pypi-publish@dc37677b2e1c63e2034f94d8a5b11f265b73ba33 # release/v1
+        with:
+          packages-dir: ${{ runner.temp }}/release/packages/
+
+  verify-install:
+    name: Install the published version from PyPI
+    needs: [validate, publish]
+    runs-on: ubuntu-24.04
+    env:
+      RELEASE_VERSION: ${{ needs.validate.outputs.version }}
+      RELEASE_REVISION: ${{ needs.validate.outputs.source_revision }}
+    steps:
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: "3.12"
+      - name: Install from the default public index in a fresh environment
+        working-directory: ${{ runner.temp }}
+        run: |
+          python -m venv "$RUNNER_TEMP/pypi-install"
+          "$RUNNER_TEMP/pypi-install/bin/python" -m pip --isolated install --only-binary=:all: --no-cache-dir --index-url https://pypi.org/simple --report "$RUNNER_TEMP/pypi-install.json" "lumina-svg-core==$RELEASE_VERSION"
+          "$RUNNER_TEMP/pypi-install/bin/python" - <<'PY'
+          import os
+          from importlib.metadata import version
+          import lumina_svg_core as svg
+          import numpy as np
+
+          assert svg.__version__ == version("lumina-svg-core") == os.environ["RELEASE_VERSION"]
+          assert svg.__source_revision__ == os.environ["RELEASE_REVISION"]
+          assert svg.__source_dirty__ is False
+          result = svg.analyze_svg_svg(
+              "<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 20 10'>"
+              "<path fill='#f00' fill-opacity='.5' fill-rule='evenodd' "
+              "d='M0 0H20V10H0Z M7 3V7H13V3Z'/>"
+              "<rect x='1' y='1' width='4' height='4' fill='#00f' fill-opacity='.5'/>"
+              "</svg>", target_width_mm=220.0, tolerance_mm=0.02,
+          )
+          assert result.status == "supported", (result.status, result.reason_code)
+          assert result.raw.hole_count == result.silhouette.hole_count == 1
+          assert result.visible.geometry_count == 2
+          assert result.visible.coordinates.dtype == np.int64
+          assert not result.visible.coordinates.flags.writeable
+          colors = result.visible.rgba_f64
+          assert colors.dtype == np.float64
+          assert any(np.allclose(color, [1/3, 0, 2/3, .75]) for color in colors)
+          assert any(np.allclose(color, [1, 0, 0, .5]) for color in colors)
+          print(f"Verified installed {svg.__version__} from {svg.__source_revision__}")
+          PY
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: pypi-install-report
+          path: ${{ runner.temp }}/pypi-install.json
+          if-no-files-found: error
+          retention-days: 90

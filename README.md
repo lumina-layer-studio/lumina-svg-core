@@ -16,22 +16,29 @@ the geometry engine, Python bindings, test fixtures, and build tools. It has no
 runtime dependency on Lumina Studio, its UI, printer settings, or application
 services. It does not generate meshes or 3MF files.
 
-**Status:** version 0.3.1, alpha. CPython 3.12, 3.13 and 3.14 are supported.
+**Status:** source version 0.3.2, alpha. CPython 3.12, 3.13 and 3.14 are supported.
 The geometry result contract is schema version 4.
 
 ## Installation
 
 ### Prebuilt wheels
 
-In a supported Python 3.12–3.14 environment, let pip select the matching public
-wheel automatically:
+After version 0.3.2 is published on PyPI, the standard installation command is:
+
+```bash
+python -m pip install lumina-svg-core==0.3.2
+```
+
+Confirm availability on the [PyPI version page](https://pypi.org/project/lumina-svg-core/0.3.2/)
+and [publishing workflow](https://github.com/lumina-layer-studio/lumina-svg-core/actions/workflows/publish.yml).
+Until that version is available, use the existing public 0.3.1 GitHub wheels:
 
 ```bash
 python -m pip install --only-binary=lumina-svg-core --find-links https://github.com/lumina-layer-studio/lumina-svg-core/releases/expanded_assets/v0.3.1 "lumina-svg-core==0.3.1"
 ```
 
 No C++ compiler, third-party checkout, manual patch, or local wheelhouse is
-needed. The command selects the published 0.3.1 release, not an unmerged branch.
+needed for a matching prebuilt wheel. The fallback command selects the published 0.3.1 release.
 LunaSVG/PlutoVG and Clipper2 are compiled into the extension by maintainers.
 
 Alternatively, download a matching wheel from
@@ -46,8 +53,8 @@ Replace the example filename with the actual downloaded wheel. Wheels are built
 for Windows x86-64, macOS Apple Silicon, macOS Intel, and Linux x86-64. macOS
 requires version 12 or newer for Python 3.12/3.13, and version 14 or newer for
 Python 3.14. Linux wheels use `manylinux_2_28` and require glibc 2.28 or newer;
-Alpine/musl, Windows ARM and free-threaded Python are not covered. The package
-is not currently published on PyPI. Match the wheel's OS, CPU and Python tags.
+Alpine/musl, Windows ARM and free-threaded Python are not covered.
+Match the wheel's OS, CPU and Python tags.
 
 ### Build the native library from source (contributors)
 
@@ -134,6 +141,13 @@ Masks, gradients, patterns, text, embedded images, external resources, non-norma
 blend modes, non-sRGB interpolation, and other unsupported semantics return a
 whole-document `unsupported` result. Zero-length dash entries are also
 unsupported. See [support and numerical limits](docs/support.md).
+
+The recorder refactor reduces upstream patch additions by 46.5% while preserving
+the public API and geometry schema. Its prior comparison of 508 private SVGs at
+220 mm / 0.02 mm with strokes enabled found the same 504 supported results and
+four `native_geometry_error` failures in both builds, with zero output differences.
+The four failures remain known 2D geometry limitations and are not counted as passes;
+see [the detailed limitation](docs/support.md#known-corpus-limitation).
 
 ## Geometry contract
 

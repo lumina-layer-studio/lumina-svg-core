@@ -7,6 +7,7 @@ import json
 from pathlib import Path
 import subprocess
 import sys
+import tomllib
 from zipfile import ZipFile
 
 import pytest
@@ -14,6 +15,9 @@ import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
 TOOL = ROOT / "tools/package_distribution.py"
+DECLARED_VERSION = tomllib.loads(
+    (ROOT / "pyproject.toml").read_text(encoding="utf-8")
+)["project"]["version"]
 
 
 def _identity() -> tuple[str, bool]:
@@ -28,7 +32,7 @@ def _identity() -> tuple[str, bool]:
     return revision, bool(status.strip())
 
 
-def _wheel(directory: Path, *, version="0.3.1", revision=None) -> Path:
+def _wheel(directory: Path, *, version=DECLARED_VERSION, revision=None) -> Path:
     actual_revision, dirty = _identity()
     directory.mkdir(exist_ok=True)
     wheel = directory / f"lumina_svg_core-{version}-cp314-cp314-win_amd64.whl"
@@ -65,7 +69,7 @@ def test_receipt_preserves_file_bytes_tags_and_source_identity(tmp_path: Path) -
     assert (output / wheel.name).read_bytes() == wheel.read_bytes()
     receipt = json.loads((output / "distribution.json").read_text(encoding="utf-8"))
     revision, dirty = _identity()
-    assert receipt["version"] == "0.3.1"
+    assert receipt["version"] == DECLARED_VERSION
     assert receipt["source_revision"] == revision
     assert receipt["source_dirty"] is dirty
     artifact = receipt["artifacts"][0]
@@ -78,7 +82,7 @@ def test_receipt_preserves_file_bytes_tags_and_source_identity(tmp_path: Path) -
 def test_unrelated_wheel_is_rejected_without_preparing_files(
     tmp_path: Path, variant: str,
 ) -> None:
-    options = {"version": "0.3.0"} if variant == "old_version" else {"revision": "b" * 40}
+    options = {"version": "0.0.0"} if variant == "old_version" else {"revision": "b" * 40}
     wheel = _wheel(tmp_path / "wheels", **options)
     output = tmp_path / "prepared"
     result = _prepare(wheel.parent, output)

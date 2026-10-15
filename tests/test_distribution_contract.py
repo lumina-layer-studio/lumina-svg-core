@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+import re
 import shutil
 import subprocess
 import tomllib
@@ -112,7 +113,10 @@ def test_python_distribution_covers_supported_cpython_versions() -> None:
     )
 
     assert metadata["project"]["name"] == "lumina-svg-core"
-    assert metadata["project"]["version"] == "0.3.1"
+    cmake = (PACKAGE_ROOT / "CMakeLists.txt").read_text(encoding="utf-8")
+    cmake_version = re.search(r"project\(lumina_svg_core VERSION ([^\s)]+)", cmake)
+    assert cmake_version is not None
+    assert metadata["project"]["version"] == cmake_version[1]
     assert metadata["project"]["requires-python"] == ">=3.12,<3.15"
     assert metadata["project"]["license"] == "AGPL-3.0-only"
     license_text = (PACKAGE_ROOT / "LICENSE").read_text(encoding="utf-8")

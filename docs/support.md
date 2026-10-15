@@ -49,6 +49,27 @@ selects a positive worker count, capped at 16. Workers commit results in
 original paint order. If a parallel-only execution failure occurs, staged state
 is discarded and one serial replay is attempted.
 
+## Known corpus limitation
+
+The recorder ownership refactor was compared against the previous implementation
+using 508 private SVGs at a target width of 220 mm, tolerance 0.02 mm and strokes
+enabled. Both builds return 504 `supported` results and four
+`native_geometry_error` results, with zero output differences. The four failures
+are not counted as passing cases. Paint recording succeeds for all four;
+two also fail during fill-only analysis with strokes disabled.
+
+These errors already exist in the native 2D geometry stage. This release does
+not repair them, and they are unrelated to mesh or 3MF generation. Private
+inputs are not redistributed. The existing comparison evidence is recorded
+in [recorder refactor PR #3](https://github.com/lumina-layer-studio/lumina-svg-core/pull/3);
+release coordination does not rerun or broaden that corpus/performance claim.
+
+此前录制器重构对比了 508 份私有 SVG：目标宽度 220 mm、容差 0.02 mm、启用描边。
+旧版和新版均为 504 份 `supported`、4 份 `native_geometry_error`，输出差异为零；
+4 个失败不计作通过。它们都能完成绘制录制，其中 2 份关闭描边、仅分析填充时也失败。
+这些是既有原生二维几何错误，本次发行不修复，也不涉及网格或 3MF 导出。
+私有输入不随包发布，发行流程不重新扩大既有样本或性能验证结论。
+
 ## Scope of the output
 
 The output contains polygon geometry, not meshes, slicer settings, printer
