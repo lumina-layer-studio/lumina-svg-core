@@ -16,7 +16,7 @@ the geometry engine, Python bindings, test fixtures, and build tools. It has no
 runtime dependency on Lumina Studio, its UI, printer settings, or application
 services. It does not generate meshes or 3MF files.
 
-**Status:** version 0.3.2 release candidate, alpha. CPython 3.12, 3.13 and 3.14 are supported.
+**Status:** source version 0.3.2, alpha. CPython 3.12, 3.13 and 3.14 are supported.
 The geometry result contract is schema version 4.
 
 ## Installation

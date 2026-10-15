@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.3.2 — Release candidate: PyPI publishing and recorder ownership
+## 0.3.2 — PyPI publishing and recorder ownership
 
 - Prepare standard installation with `python -m pip install lumina-svg-core==0.3.2`
   once the version is published on PyPI; retain the public 0.3.1 GitHub wheels
@@ -20,7 +20,7 @@
   output differences. All four record paints successfully; two also fail
   without strokes. These are existing 2D geometry errors, outside 3MF export.
 
-0.3.2 为发布候选；只有 PyPI 出现该版本且发布工作流通过后，标准安装命令才可用。
+0.3.2 增加 PyPI 发布流程；只有 PyPI 出现该版本且发布工作流通过后，标准安装命令才可用。
 发布流程核对已合入的标签、完整 13 个包及来源清单，再通过受保护环境上传；
 原生接口、协议和依赖版本保持不变。既有 508 份样本对照中的 4 个二维几何失败
 继续明确保留，不计入成功，也不归因于 3MF 导出。
