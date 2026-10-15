@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 import json
+from importlib.metadata import version
 import os
 from pathlib import Path
 import shutil
 import subprocess
+import tomllib
 
 import pytest
 
@@ -41,7 +43,11 @@ def _resolve(tmp_path: Path, source: Path, declared: dict[str, str] | None = Non
 
 
 def test_installed_package_exposes_its_build_identity() -> None:
-    assert lumina_svg_core.__version__ == "0.3.1"
+    declared_version = tomllib.loads(
+        (ROOT / "pyproject.toml").read_text(encoding="utf-8")
+    )["project"]["version"]
+    assert lumina_svg_core.__version__ == version("lumina-svg-core")
+    assert lumina_svg_core.__version__ == declared_version
     assert hasattr(lumina_svg_core, "__source_revision__")
     assert hasattr(lumina_svg_core, "__source_dirty__")
     revision = lumina_svg_core.__source_revision__

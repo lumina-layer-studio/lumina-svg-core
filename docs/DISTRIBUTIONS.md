@@ -3,11 +3,14 @@
 The manual `Prepare distributions` workflow reuses the verified wheel/source
 pipeline and retains files with source/hash receipts for 90 days. It produces
 reviewable artifacts; it does not publish to GitHub Releases or PyPI. Regular
-PR/default-branch/tag CI uses the same checks and retains artifacts for 30 days.
-Public versioned downloads remain available through GitHub Releases.
+PR/default-branch CI uses the same checks and retains artifacts for 30 days.
+The separate `Publish PyPI release` workflow reuses those builds with 90-day
+retention after validating a merged release tag. Public versioned downloads
+remain available through GitHub Releases.
 
 手动工作流复用同一套构建和验证流程，将安装包、源码包及来源清单保存 90 天；
-普通 CI 产物保存 30 天。工作流准备文件，不自动发布；公开版本通过 GitHub Releases 下载。
+普通 CI 产物保存 30 天。手动准备工作流不发布；独立 PyPI 发布工作流先验证已合入的
+发行标签，再复用构建并保存 90 天。既有公开版本仍可通过 GitHub Releases 下载。
 
 ## Targets / 构建目标
 
@@ -93,6 +96,46 @@ rejected instead of overwritten.
 打包前核对 wheel 内嵌来源与当前源码；源码包核对版本和许可证，来源记录指打包检出目录。
 已有同名且内容不同的文件会被拒绝，发行准备要求源码没有未提交改动。
 
+## Complete release assembly / 完整发行组装
+
+`package_distribution.py` can prepare individual platform bundles for review.
+`prepare_release.py` coordinates an actual upload candidate and reuses that
+metadata/license/source/hash validation with `require_clean=True`:
+
+```bash
+python tools/prepare_release.py check-tag --tag v0.3.2
+python tools/prepare_release.py assemble \
+  --tag v0.3.2 \
+  --incoming-dir /tmp/lumina-svg-incoming \
+  --output-dir /tmp/lumina-svg-release
+```
+
+The tag must exist on HEAD, equal the version declared in both `pyproject.toml`
+and CMake, and be reachable from `origin/dev-refactor`. Fetch the current remote
+branch and tags before a local release check. Incoming downloads and output
+must be outside the source checkout. Keep the four wheel bundles and the sdist
+bundle in separate subdirectories so their `distribution.json` receipts do not
+overwrite each other.
+
+Assembly requires exactly the 12 target wheels above and one matching sdist.
+It checks each bundle's clean source SHA/version and the exact artifact list,
+hashes, sizes and wheel tags against the packages. Missing, duplicate, extra or
+unrelated targets and inconsistent receipts are rejected. The original package
+bytes are copied to `packages/`; the combined `distribution.json` remains
+beside that directory. An existing output directory is rejected. Only the
+13 packages, not the JSON receipt, are uploaded to PyPI.
+
+Source archive provenance is the clean checkout declared by its build-bundle
+receipt; the archive's package version and license are checked as before.
+This does not add a new embedded sdist identity format or a cryptographic source
+attestation.
+
+完整发行必须是 HEAD 上与 Python/CMake 版本一致、已合入 `origin/dev-refactor` 的标签。
+五组下载目录分别保存清单，输入和输出都放在源码目录之外。组装核对 12 个 wheel、
+1 个源码包、相同的干净源码 SHA、清单和实际文件字节；缺失、重复、多余或不一致即失败。
+最终目录包含 `packages/` 和旁边的合并清单，上传仅使用 13 个包。源码包来源沿用构建
+清单声明，不引入新的包格式或密码学认证。
+
 Publish only reviewed clean artifacts, retain the receipt alongside downloads,
 and use a new package version for changed files. Do not replace a published
 artifact under the same filename/version. Installing a matching wheel requires
@@ -100,13 +143,24 @@ no compiler; source builds still require the documented toolchain.
 
 ## Consumer installation / 使用者安装
 
-The README's `--find-links` command selects the public versioned wheel without
+After 0.3.2 is available on PyPI, the standard command is:
+
+```bash
+python -m pip install lumina-svg-core==0.3.2
+```
+
+Until publication is confirmed by the
+[PyPI version page](https://pypi.org/project/lumina-svg-core/0.3.2/) and
+[publishing workflow](https://github.com/lumina-layer-studio/lumina-svg-core/actions/workflows/publish.yml),
+the README's exact 0.3.1 GitHub `--find-links` command remains the public fallback.
+Either matching prebuilt wheel installs without
 a third-party checkout, manual patch, local wheelhouse, or C++ compiler.
 Native-library source builds are a contributor workflow, not a prerequisite
 for using the library from a Python application source checkout. This project
 ships the native library; it does not ship a Lumina application installer.
 
-README 中的 `--find-links` 命令会自动选择公开 wheel，使用者无需额外克隆第三方库、
+0.3.2 正式出现在 PyPI 并通过发布验证后，可使用标准安装命令；在此之前使用 README
+中保留的 0.3.1 GitHub 备用命令。匹配的预编译 wheel 无需额外克隆第三方库、
 手工打补丁、准备本地 wheelhouse 或编译 C++。原生库源码构建属于贡献者工作流，
 不是从 Python 应用源码调用本库的前置要求；本项目也不分发 Lumina 整套软件安装器。
 
@@ -123,7 +177,7 @@ downloads do not replace each platform's native CI execution.
 并实际解析透明叠色、多边形和孔洞。这验证的是已发布版本，不代表未合入重构已发布；
 跨平台下载检查不能代替各平台 CI 的实际运行。
 
-## PyPI readiness / PyPI 发布准备
+## PyPI publisher and release gate / PyPI 发布身份与门禁
 
 GitHub Releases already provide public installation. PyPI is a separate
 convenience endpoint; upstream acceptance of the recorder patch is not a
@@ -131,28 +185,52 @@ prerequisite for either distribution route.
 
 GitHub Releases 已可满足公开安装；PyPI 是另一个便利入口，与上游是否接收补丁无关。
 
-Before a first PyPI upload:
+The project owner must authorize this exact PyPI Trusted Publisher; GitHub login
+alone does not grant PyPI ownership. See
+[PyPI's publisher setup](https://docs.pypi.org/trusted-publishers/adding-a-publisher/).
 
-1. Select a new reviewed release version; never overwrite the published 0.3.1
-   files with refactored binaries under the same names.
-2. Complete the wheel matrix, source rebuild, installed runtime checks and
-   `python -m twine check --strict <sdist> <wheels>` metadata validation.
-3. Have the project owner establish PyPI ownership and an authorized publisher.
-   A GitHub login alone does not establish PyPI publishing rights. A trusted
-   publisher must match the chosen repository and actual publishing workflow;
-   see [PyPI's publisher setup](https://docs.pypi.org/trusted-publishers/adding-a-publisher/).
-4. Keep preparation separate from upload. The current `Prepare distributions`
-   workflow deliberately prepares artifacts only; it is not a PyPI publisher.
+| Publisher field | Exact value |
+| --- | --- |
+| PyPI project | `lumina-svg-core` |
+| GitHub owner | `lumina-layer-studio` |
+| Repository | `lumina-svg-core` |
+| Workflow filename | `publish.yml` |
+| GitHub environment | `pypi` |
 
-首次上传前，应使用新版本完成各平台验证及 Twine 元数据检查，并由项目 owner
-确认 PyPI 归属和发布身份。GitHub 登录不等于拥有 PyPI 发布权限；可信发布者需要
-匹配实际的仓库和上传工作流。当前手动工作流只准备文件，不会自动上传。
+The pending publisher and GitHub environment are configured for this candidate.
+That authorizes a future upload; it does not publish the PyPI project or version.
+Confirm actual availability using the version page and completed workflow above.
 
-The local source archive and rebuilt wheel pass strict Twine validation.
-The public PyPI project endpoint returns 404 at this check; no PyPI upload or
-publisher/account configuration is performed here. Do not describe build
-artifacts or an unmerged branch as a published PyPI release.
+The GitHub `pypi` environment accepts `v*` tags and uses the maintainer
+`MOVIBALE` as required reviewer. Self-review is permitted for the sole maintainer.
+This asks for one formal upload approval after the release packages are prepared;
+ordinary builds and end-user installation need no publishing authorization.
 
-本次源码包及重建 wheel 已通过严格 Twine 检查。核对时 PyPI 公开项目接口返回 404；
-本轮没有上传 PyPI，也未替用户创建账号或配置发布身份。不要将构建产物或未合入分支
-描述成已发布的 PyPI 版本。
+1. A human merges recorder refactor PR #3, then the separate 0.3.2 release PR,
+   after their checks pass. Neither workflow merges a PR automatically.
+2. Create `v0.3.2` only on the resulting reviewed, clean release commit already
+   merged into `dev-refactor`. Never tag an unmerged topic branch for upload.
+3. A `v*` tag push starts `publish.yml`. Manual dispatch must also select the
+   actual version tag: default/topic branch dispatch is rejected. The checked-out
+   commit must equal `github.sha`; the tag, CMake and Python versions must agree.
+4. Non-credentialed jobs build/rebuild/install/test the platform wheels and
+   sdist, retain the five bundles for 90 days, assemble the complete checked set,
+   and run `python -m twine check --strict` on its 13 packages.
+5. The `pypi` environment gate authorizes the upload job. Only that job receives
+   `id-token: write`; its pinned PyPI action downloads the checked set and uploads
+   packages using Trusted Publishing. There is no stored PyPI token or
+   `skip-existing` bypass. Never overwrite any existing PyPI/GitHub release file;
+   changed bytes require a new version.
+6. After upload, a fresh virtual environment installs the exact released version
+   as binary wheels only from default public PyPI, without cache, local wheels or
+   extra indexes. Its pip JSON report is retained for 90 days with download URLs.
+   It checks the installed version and source SHA and executes real alpha/hole
+   analysis, read-only int64 coordinates and float64 RGBA. An install or functional
+   failure fails the job; no arbitrary retry masks it.
+
+本候选已登记以上精确匹配的待用可信发布者，也已配置仅接受 `v*` 标签的 `pypi` 环境。
+授权配置完成不代表项目或版本已经上传；实际可用状态仍以版本页面和工作流为准。
+维护者 `MOVIBALE` 在完整制品通过检查后进行一次正式上传批准；普通构建和用户安装
+无需额外发布授权。先人工合入 PR #3 和发行 PR，再对干净、已合入的提交创建新标签。
+分支手动触发不能上传；只有最后上传任务获得 OIDC 权限，随后从 PyPI 的全新安装
+必须通过实际二维几何烟测。不要把候选构建或未合入分支描述成已经公开的 PyPI 发行。
