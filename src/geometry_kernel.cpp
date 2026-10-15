@@ -3233,61 +3233,11 @@ void appendRing(GeometryCollection& collection, const Path64& ring,
     collection.hole_parent.push_back(parent);
 }
 
-void appendOuterNode(GeometryCollection& collection, const PolyPath64& outer,
-                     ComplexityBudget& complexityBudget)
-{
-    if(outer.IsHole() || outer.Polygon().size() < 3)
-        return;
-    const auto outerRingIndex = static_cast<int64_t>(
-        collection.ring_offsets.size() - 1);
-    appendRing(collection, outer.Polygon(), -1, complexityBudget);
-    for(size_t index = 0; index < outer.Count(); ++index) {
-        const auto* child = outer.Child(index);
-        if(child->IsHole())
-            appendRing(
-                collection, child->Polygon(), outerRingIndex,
-                complexityBudget);
-    }
-    if(collection.polygon_offsets.size()
-            == collection.polygon_offsets.max_size())
-        throw ComplexityLimitError();
-    collection.polygon_offsets.push_back(collection.ring_offsets.size() - 1);
-}
-
-void appendPolyTree(GeometryCollection& collection, const PolyTree64& tree,
-                    ComplexityBudget& complexityBudget)
-{
-    std::vector<const PolyPath64*> pending;
-    pending.reserve(tree.Count());
-    for(size_t index = tree.Count(); index > 0; --index)
-        pending.push_back(tree.Child(index - 1));
-    while(!pending.empty()) {
-        const auto* outer = pending.back();
-        pending.pop_back();
-        appendOuterNode(collection, *outer, complexityBudget);
-        for(size_t holeIndex = outer->Count(); holeIndex > 0; --holeIndex) {
-            const auto* hole = outer->Child(holeIndex - 1);
-            for(size_t childIndex = hole->Count(); childIndex > 0;
-                    --childIndex) {
-                if(pending.size() == pending.max_size())
-                    throw ComplexityLimitError();
-                pending.push_back(hole->Child(childIndex - 1));
-            }
-        }
-    }
-}
-
-// A Clipper union is correct as a filled region, but its outline can touch or
-// cross itself, or a hole can touch its shell: two lobes meeting at one
-// vertex, a vertex sitting on a non-adjacent edge, a collinear run shared by
-// two rings, a genuine crossing, a hole that connects to the shell in two
-// places and pinches the region apart. OGC consumers reject every one of
-// those, so exported boundaries go through the shared canonical rule: settled
-// grid linework is emitted as filled faces meeting only along their boundaries,
-// with the shell/hole hierarchy rebuilt from containment and nesting parity.
-// Quantized cuts can bend segments; their cumulative boundary displacement is
-// charged to the physical error budget. An already canonical union is emitted
-// directly when its single ring makes the hierarchy unambiguous.
+// Normalized boundaries can still have self-contacts, crossings, shared runs,
+// or shell/hole contacts. Export uses the shared canonical rule to express
+// filled faces with a valid shell/hole hierarchy for OGC consumers. Already
+// oriented, normalized paths need exact ring ownership, not another union that
+// can erase positive area.
 void appendCanonicalNode(GeometryCollection& collection,
                          const lumina::canonical::CanonicalNode<int64_t>& node,
                          ComplexityBudget& complexityBudget)
@@ -3351,17 +3301,17 @@ std::vector<Paths64> takeCanonicalComponents(
     return components;
 }
 
-void appendCoveragePolyTree(GeometryCollection& collection,
-                            const PolyTree64& tree,
-                            ComplexityBudget& complexityBudget,
-                            uint64_t& maximumNodingDisplacedPasses,
-                            std::vector<Paths64>* surfaceGroups)
+void appendCoveragePaths(GeometryCollection& collection,
+                         const Paths64& paths,
+                         ComplexityBudget& complexityBudget,
+                         uint64_t& maximumNodingDisplacedPasses,
+                         std::vector<Paths64>* surfaceGroups)
 {
-    auto paths = lumina::canonical::PolyTreePaths<int64_t>(tree);
-    // Node the linework to the grid before anything judges it. Splitting a
-    // segment at a quantized node moves where the pieces meet, so the pieces
-    // can meet again somewhere else; `NodeToGrid` is the shared rule's settle
-    // step for that, and the face build below requires its result.
+    // Node original linework before classifying it. Integer contacts route
+    // their connected sets through cells met by the original edges; newly
+    // contacting sets rebuild from those same originals. Displacement is
+    // bounded once relative to original edges, rather than compounded across
+    // routed pieces, and its maximum is charged to the physical error budget.
     bool already_canonical = false;
     lumina::canonical::NodingStats nodingStats;
     const auto noded =
@@ -3369,16 +3319,6 @@ void appendCoveragePolyTree(GeometryCollection& collection,
             paths, &already_canonical, &nodingStats);
     maximumNodingDisplacedPasses = std::max(
         maximumNodingDisplacedPasses, nodingStats.displaced_passes);
-    // The contact audit establishes simple linework, not Clipper's ownership
-    // metadata. Only a single ring has an unambiguous hierarchy already.
-    if(already_canonical && paths.size() == 1) {
-        appendPolyTree(collection, tree, complexityBudget);
-        if(surfaceGroups != nullptr) {
-            surfaceGroups->clear();
-            surfaceGroups->emplace_back(std::move(paths));
-        }
-        return;
-    }
     lumina::canonical::CanonicalNode<int64_t> coverage;
     if(already_canonical) {
         // Rebuild nesting and NonZero coverage exactly without moving points.
@@ -3399,7 +3339,7 @@ void appendCoveragePolyTree(GeometryCollection& collection,
             // delete crossing contours, and export noding must not change the
             // coordinates used by the independent composition pass.
             surfaceGroups->clear();
-            surfaceGroups->emplace_back(std::move(paths));
+            surfaceGroups->emplace_back(paths);
         }
     }
 }
@@ -3437,20 +3377,13 @@ bool appendGeometry(GeometryCollection& collection,
 {
     if(geometry.paths.empty())
         return false;
-    PolyTree64 tree;
-    preflightNormalizedBoolean(complexityBudget, geometry.paths);
-    Clipper64 clipper;
-    clipper.AddSubject(geometry.paths);
-    if(!clipper.Execute(ClipType::Union, FillRule::NonZero, tree))
-        throw std::runtime_error("clipper_union_failed");
-    recordPolyTreeOutput(tree, complexityBudget);
     // A Paths64 difference can contain a redundant oriented ring at a
-    // touching boundary. Rebuilding the canonical PolyTree may remove that
+    // touching boundary. Rebuilding the canonical ring tree may remove that
     // ring without removing any filled area. Ring-count equality is therefore
     // not a validity invariant; only an empty canonical tree is a collapse.
     const size_t polygonCountBefore = collection.polygon_offsets.size();
-    appendCoveragePolyTree(collection, tree, complexityBudget,
-                           maximumNodingDisplacedPasses, surfaceGroups);
+    appendCoveragePaths(collection, geometry.paths, complexityBudget,
+                        maximumNodingDisplacedPasses, surfaceGroups);
     if(collection.polygon_offsets.size() == polygonCountBefore)
         return false;
 

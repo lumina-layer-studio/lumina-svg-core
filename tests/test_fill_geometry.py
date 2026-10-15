@@ -37,6 +37,27 @@ def geometry_area(result, collection, geometry_index: int) -> float:
     return abs(area)
 
 
+def _exact_component_areas(collection) -> list[int]:
+    """Return signed doubled component areas using Python integers."""
+    areas = []
+    for start, end in zip(
+        collection.polygon_offsets[:-1],
+        collection.polygon_offsets[1:],
+        strict=True,
+    ):
+        area = 0
+        for ring_index in range(int(start), int(end)):
+            first = int(collection.ring_offsets[ring_index])
+            last = int(collection.ring_offsets[ring_index + 1])
+            points = collection.coordinates[first:last].tolist()
+            area += sum(
+                a[0] * b[1] - a[1] * b[0]
+                for a, b in zip(points, points[1:])
+            )
+        areas.append(area)
+    return areas
+
+
 def _normalized_coordinate_bounds(result):
     coordinates = (
         np.asarray(result.raw.coordinates, dtype=np.float64)
@@ -338,17 +359,9 @@ def test_vectorizer_origin_metadata_does_not_fill_an_authored_hole() -> None:
     assert geometry_area(result, result.raw, 0) == pytest.approx(96.0, abs=1e-5)
 
 
-@pytest.mark.parametrize(
-    ("axis", "expected_geometry_count", "expected_fragment_reasons"),
-    [
-        ("X", 1, ()),
-        ("Y", 0, ("area_collapse",)),
-    ],
-)
+@pytest.mark.parametrize("axis", ["X", "Y"])
 def test_near_singular_skew_respects_recorded_coordinate_precision(
     axis: str,
-    expected_geometry_count: int,
-    expected_fragment_reasons: tuple[str, ...],
 ) -> None:
     result = lumina_svg_core.analyze_svg_svg(
         "<svg viewBox='0 0 100 100'>"
@@ -361,14 +374,16 @@ def test_near_singular_skew_respects_recorded_coordinate_precision(
 
     assert result.status == "supported"
     assert result.reason_code == ""
-    assert result.raw.geometry_count == expected_geometry_count
-    assert (
-        result.unprintable_fragments.reason_codes
-        == expected_fragment_reasons
-    )
+    assert result.unprintable_fragments.count == 0
+    for name in ("raw", "visible", "silhouette"):
+        collection = getattr(result, name)
+        assert collection.geometry_count == 1
+        assert collection.component_count == 1
+        assert collection.hole_count == 0
+        assert _exact_component_areas(collection)[0] > 0
 
 
-def test_hierarchy_collapse_does_not_hide_an_independent_valid_paint() -> None:
+def test_near_singular_fill_preserves_an_independent_valid_paint() -> None:
     result = lumina_svg_core.analyze_svg_svg(
         "<svg viewBox='0 0 100 100'>"
         "<rect x='10' y='0' width='1' height='.00001' "
@@ -381,12 +396,22 @@ def test_hierarchy_collapse_does_not_hide_an_independent_valid_paint() -> None:
 
     assert result.status == "supported"
     assert result.reason_code == ""
-    assert result.raw.geometry_count == 1
-    assert result.raw.rgba.tolist() == [[171, 205, 239, 255]]
-    assert result.unprintable_fragments.reason_codes == ("area_collapse",)
-    assert result.unprintable_fragments.rgba.tolist() == [
-        [18, 52, 86, 255]
-    ]
+    assert result.unprintable_fragments.count == 0
+    for name in ("raw", "visible", "silhouette"):
+        collection = getattr(result, name)
+        assert collection.component_count == 2
+        assert collection.hole_count == 0
+        assert all(area > 0 for area in _exact_component_areas(collection))
+        if name == "silhouette":
+            assert collection.geometry_count == 1
+        else:
+            assert collection.geometry_count == 2
+            assert collection.rgba.tolist() == [
+                [18, 52, 86, 255], [171, 205, 239, 255]
+            ]
+            assert collection.draw_indices.tolist() == [0, 1]
+            assert collection.source_indices.tolist() == [1, 2]
+            assert collection.source_kinds.tolist() == [0, 0]
 
 
 def test_document_viewport_remains_part_of_lumina_bbox_contract() -> None:
@@ -868,7 +893,16 @@ def test_evenodd_hole_and_disconnected_shell_survive() -> None:
     assert visible.hole_count == 1
     assert np.count_nonzero(visible.hole_parent == -1) == 2
     assert np.count_nonzero(visible.hole_parent >= 0) == 1
-    assert visible.polygon_offsets.tolist() == [0, 2, 3]
+    assert visible.geometry_offsets.tolist() == [0, 2]
+    assert sorted(np.diff(visible.polygon_offsets).tolist()) == [1, 2]
+    for start, end in zip(
+        visible.polygon_offsets[:-1],
+        visible.polygon_offsets[1:],
+        strict=True,
+    ):
+        assert visible.hole_parent[int(start)] == -1
+        for hole_index in range(int(start) + 1, int(end)):
+            assert visible.hole_parent[hole_index] == start
 
 
 @pytest.mark.parametrize("hole_width", [0.0001, 0.0002, 0.0003])

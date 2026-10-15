@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from fractions import Fraction
 import json
 from pathlib import Path
 
@@ -94,8 +95,8 @@ def geometry_index_with_bounds(result, collection, expected_bounds):
     return matches[0]
 
 
-def assert_valid_integer_components(collection) -> None:
-    """Check exported topology without losing the integer area signs."""
+def assert_valid_integer_components(collection) -> list[int]:
+    """Check topology and return exact signed doubled component areas."""
     shapes = shapely.from_ragged_array(
         shapely.GeometryType.MULTIPOLYGON,
         collection.coordinates.astype(np.float64),
@@ -113,6 +114,7 @@ def assert_valid_integer_components(collection) -> None:
             for other in polygons[index + 1:]:
                 assert polygon.intersection(other).area == 0.0
 
+    component_areas = []
     for start, end in zip(
         collection.polygon_offsets[:-1],
         collection.polygon_offsets[1:],
@@ -136,6 +138,88 @@ def assert_valid_integer_components(collection) -> None:
                 assert collection.hole_parent[ring_index] == shell_index
             twice_component_area += twice_ring_area
         assert twice_component_area > 0
+        component_areas.append(twice_component_area)
+    return component_areas
+
+
+def _exact_ring_winding(
+    points: list[list[int]], probe: tuple[Fraction, Fraction],
+) -> int:
+    winding = 0
+    for first, last in zip(points, points[1:]):
+        cross = ((last[0] - first[0]) * (probe[1] - first[1])
+                 - (last[1] - first[1]) * (probe[0] - first[0]))
+        if cross == 0:
+            assert not (
+                min(first[0], last[0]) <= probe[0] <= max(first[0], last[0])
+                and min(first[1], last[1]) <= probe[1] <= max(first[1], last[1])
+            ), "probe lies on a ring boundary"
+        if first[1] <= probe[1] < last[1] and cross > 0:
+            winding += 1
+        if last[1] <= probe[1] < first[1] and cross < 0:
+            winding -= 1
+    return winding
+
+
+@pytest.mark.parametrize("opacity", [1.0, 0.5])
+def test_export_preserves_positive_integer_components_from_one_fill(
+    opacity: float,
+) -> None:
+    result = lumina_svg_core.analyze_svg_svg(
+        "<svg viewBox='0 0 100 100'>"
+        f"<path fill='#123456' fill-opacity='{opacity}' "
+        "transform='matrix(1 65536 0 1 0 0)' "
+        "d='M10 0h1v.0000152587890625h-1Z M20 20h10v10h-10Z'/>"
+        "</svg>",
+        target_width_mm=100.0,
+        tolerance_mm=0.02,
+    )
+
+    assert result.status == "supported", result.reason_code
+    assert result.reason_code == ""
+    assert result.unprintable_fragments.count == 0
+    grid_mm = result.grid_to_source_unit * result.scale_factor
+    perimeter_mm = 20.0 * np.hypot(1.0, 65536.0) + 20.0
+    error_mm = result.max_quantization_error_mm
+    area_error_mm2 = perimeter_mm * error_mm + np.pi * error_mm ** 2
+    for name in ("raw", "visible", "silhouette"):
+        collection = getattr(result, name)
+        assert collection.component_count == 2
+        assert collection.hole_count == 0
+        exact_component_areas = assert_valid_integer_components(collection)
+        coarse_area_mm2 = max(exact_component_areas) * 0.5 * grid_mm ** 2
+        assert coarse_area_mm2 == pytest.approx(100.0, abs=area_error_mm2)
+        count = collection.geometry_count
+        np.testing.assert_array_equal(collection.draw_indices, [0] * count)
+        if name == "silhouette":
+            assert count == 1
+            np.testing.assert_array_equal(collection.source_indices, [-1])
+            np.testing.assert_array_equal(collection.source_kinds, [2])
+            np.testing.assert_array_equal(collection.rgba, [[0, 0, 0, 255]])
+            np.testing.assert_array_equal(collection.rgba_f64, [[0, 0, 0, 1]])
+            np.testing.assert_array_equal(collection.contributor_offsets, [0, 0])
+            assert collection.contributor_draw_indices.size == 0
+            assert collection.contributor_source_indices.size == 0
+            assert collection.contributor_source_kinds.size == 0
+            assert collection.contributor_weights.size == 0
+        else:
+            assert count >= 1
+            np.testing.assert_array_equal(collection.source_indices, [1] * count)
+            np.testing.assert_array_equal(collection.source_kinds, [0] * count)
+            np.testing.assert_array_equal(
+                collection.rgba,
+                [[18, 52, 86, round(255 * opacity)]] * count,
+            )
+            np.testing.assert_allclose(
+                collection.rgba_f64,
+                [[18 / 255, 52 / 255, 86 / 255, opacity]] * count,
+                rtol=0.0,
+                atol=1e-15,
+            )
+            for index in range(count):
+                assert geometry_contributors(collection, index) == [
+                    (0, 1, 0, opacity)
+                ]
 
 
 @pytest.mark.parametrize("opacity", [1.0, 0.5, 0.25])
@@ -158,17 +242,36 @@ def test_nearly_singular_fill_has_nonoverlapping_shell_hierarchy(
     assert result.reason_code == ""
     assert result.unprintable_fragments.count == 0
     grid_step_mm = result.grid_to_source_unit * result.scale_factor
+    # The existing noder routes this normalized contact once. The redundant
+    # export union filled the empty probe below and hid that routing.
     assert result.max_quantization_error_mm == pytest.approx(
-        grid_step_mm / np.sqrt(2.0), rel=1e-15,
+        (1.0 / np.sqrt(2.0) + 1.0) * grid_step_mm,
+        rel=1e-15,
+        abs=0.0,
     )
     assert (result.max_flattening_error_mm
             + result.max_quantization_error_mm) <= 0.6 * 0.02
+    # The independent exact probe is inside the shell and its negative ring.
+    # A second export union used to fill this originally empty point.
+    hole_probe = (Fraction(1454000000002, 3), Fraction(1454000000002, 3))
     for name in ("raw", "visible", "silhouette"):
         collection = getattr(result, name)
-        assert_valid_integer_components(collection)
+        assert assert_valid_integer_components(collection) == [
+            8000000000806283433774
+        ]
         assert collection.geometry_count == 1
         assert collection.component_count == 1
-        assert collection.hole_count == 0
+        assert collection.hole_count == 1
+        ring_windings = []
+        for start, end in zip(collection.ring_offsets[:-1],
+                              collection.ring_offsets[1:], strict=True):
+            points = collection.coordinates[int(start):int(end)].tolist()
+            ring_windings.append(_exact_ring_winding(points, hole_probe))
+        assert ring_windings == [1, -1]
+        assert sum(ring_windings) == 0
+        hole = collection.coordinates[int(collection.ring_offsets[1]):].tolist()
+        assert sum(a[0] * b[1] - a[1] * b[0]
+                   for a, b in zip(hole, hole[1:])) == -16000000001
         assert collection.draw_indices.tolist() == [0]
         if name == "silhouette":
             assert collection.source_indices.tolist() == [-1]
