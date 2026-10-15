@@ -242,26 +242,50 @@ def test_nearly_singular_fill_has_nonoverlapping_shell_hierarchy(
     assert result.reason_code == ""
     assert result.unprintable_fragments.count == 0
     grid_step_mm = result.grid_to_source_unit * result.scale_factor
-    # The existing noder routes this normalized contact once. The redundant
-    # export union filled the empty probe below and hid that routing.
-    assert result.max_quantization_error_mm == pytest.approx(
-        (1.0 / np.sqrt(2.0) + 1.0) * grid_step_mm,
-        rel=1e-15,
-        abs=0.0,
+    source_points = [
+        [7, -1], [-6, -3], [-5, 1], [6, 4], [6, -6], [-3, 2],
+        [-1, -1], [10, 100000000000],
+    ]
+    # Exact authored NonZero area: -signed area - the winding -2 face area
+    # + twice the winding +1 triangle area. Independent rational face splitting
+    # and a vertical sweep agree; the transform determinant is 1/10**10.
+    source_area = Fraction(
+        358147636428455151200902155802872784667,
+        895369090987684418179888164,
     )
-    assert (result.max_flattening_error_mm
-            + result.max_quantization_error_mm) <= 0.6 * 0.02
+    scale = Fraction.from_float(result.scale_factor)
+    source_area_mm2 = source_area / 10**10 * scale ** 2
+    transformed_source = [
+        (Fraction(x + 50), Fraction(x + 50) + Fraction(y, 10**10))
+        for x, y in source_points
+    ]
+    # L1 bounds the eight segment lengths (120.000000001 source units).
+    # Their radius-r capsules bound changed area by 2*r*sum(lengths)+N*pi*r²;
+    # use pi <= 4, including the reported source/flattening boundary error.
+    perimeter_l1_mm = scale * sum(
+        abs(b[0] - a[0]) + abs(b[1] - a[1])
+        for a, b in zip(transformed_source,
+                        transformed_source[1:] + transformed_source[:1],
+                        strict=True)
+    )
+    radius_mm = (Fraction.from_float(result.max_flattening_error_mm)
+                 + Fraction.from_float(result.max_quantization_error_mm))
+    area_error_mm2 = (2 * radius_mm * perimeter_l1_mm
+                      + 4 * len(source_points) * radius_mm ** 2)
     # The independent exact probe is inside the shell and its negative ring.
     # A second export union used to fill this originally empty point.
     hole_probe = (Fraction(1454000000002, 3), Fraction(1454000000002, 3))
+    source_probe = (hole_probe[0] / 10**10 - 50, Fraction(0))
+    assert _exact_ring_winding(source_points + source_points[:1], source_probe) == 0
     for name in ("raw", "visible", "silhouette"):
         collection = getattr(result, name)
-        assert assert_valid_integer_components(collection) == [
-            8000000000806283433774
-        ]
         assert collection.geometry_count == 1
         assert collection.component_count == 1
         assert collection.hole_count == 1
+        component_area2 = assert_valid_integer_components(collection)[0]
+        actual_area_mm2 = (Fraction(component_area2, 2)
+                           * Fraction.from_float(grid_step_mm) ** 2)
+        assert abs(actual_area_mm2 - source_area_mm2) <= area_error_mm2
         ring_windings = []
         for start, end in zip(collection.ring_offsets[:-1],
                               collection.ring_offsets[1:], strict=True):
@@ -291,6 +315,15 @@ def test_nearly_singular_fill_has_nonoverlapping_shell_hierarchy(
             assert geometry_contributors(collection, 0) == pytest.approx(
                 [(0, 1, 0, opacity)]
             )
+    # The existing noder routes this normalized contact once. The redundant
+    # export union filled the empty probe below and hid that routing.
+    assert result.max_quantization_error_mm == pytest.approx(
+        (1.0 / np.sqrt(2.0) + 1.0) * grid_step_mm,
+        rel=1e-15,
+        abs=0.0,
+    )
+    assert (result.max_flattening_error_mm
+            + result.max_quantization_error_mm) <= 0.6 * 0.02
 
 
 @pytest.mark.parametrize("opacity", [1.0, 0.5, 0.25])
