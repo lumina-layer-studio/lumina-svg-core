@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from fractions import Fraction
 import json
 from pathlib import Path
 
@@ -92,6 +93,283 @@ def geometry_index_with_bounds(result, collection, expected_bounds):
     ]
     assert len(matches) == 1
     return matches[0]
+
+
+def assert_valid_integer_components(collection) -> list[int]:
+    """Check topology and return exact signed doubled component areas."""
+    shapes = shapely.from_ragged_array(
+        shapely.GeometryType.MULTIPOLYGON,
+        collection.coordinates.astype(np.float64),
+        (
+            collection.ring_offsets,
+            collection.polygon_offsets,
+            collection.geometry_offsets,
+        ),
+    )
+    for shape in shapes:
+        assert shape.is_valid, shapely.is_valid_reason(shape)
+        polygons = list(shape.geoms)
+        assert all(polygon.is_valid for polygon in polygons)
+        for index, polygon in enumerate(polygons):
+            for other in polygons[index + 1:]:
+                assert polygon.intersection(other).area == 0.0
+
+    component_areas = []
+    for start, end in zip(
+        collection.polygon_offsets[:-1],
+        collection.polygon_offsets[1:],
+        strict=True,
+    ):
+        shell_index = int(start)
+        twice_component_area = 0
+        for ring_index in range(shell_index, int(end)):
+            point_start = int(collection.ring_offsets[ring_index])
+            point_end = int(collection.ring_offsets[ring_index + 1])
+            points = collection.coordinates[point_start:point_end].tolist()
+            twice_ring_area = sum(
+                first[0] * second[1] - first[1] * second[0]
+                for first, second in zip(points, points[1:])
+            )
+            if ring_index == shell_index:
+                assert twice_ring_area > 0
+                assert collection.hole_parent[ring_index] == -1
+            else:
+                assert twice_ring_area < 0
+                assert collection.hole_parent[ring_index] == shell_index
+            twice_component_area += twice_ring_area
+        assert twice_component_area > 0
+        component_areas.append(twice_component_area)
+    return component_areas
+
+
+def _exact_ring_winding(
+    points: list[list[int]], probe: tuple[Fraction, Fraction],
+) -> int:
+    winding = 0
+    for first, last in zip(points, points[1:]):
+        cross = ((last[0] - first[0]) * (probe[1] - first[1])
+                 - (last[1] - first[1]) * (probe[0] - first[0]))
+        if cross == 0:
+            assert not (
+                min(first[0], last[0]) <= probe[0] <= max(first[0], last[0])
+                and min(first[1], last[1]) <= probe[1] <= max(first[1], last[1])
+            ), "probe lies on a ring boundary"
+        if first[1] <= probe[1] < last[1] and cross > 0:
+            winding += 1
+        if last[1] <= probe[1] < first[1] and cross < 0:
+            winding -= 1
+    return winding
+
+
+@pytest.mark.parametrize("opacity", [1.0, 0.5])
+def test_export_preserves_positive_integer_components_from_one_fill(
+    opacity: float,
+) -> None:
+    result = lumina_svg_core.analyze_svg_svg(
+        "<svg viewBox='0 0 100 100'>"
+        f"<path fill='#123456' fill-opacity='{opacity}' "
+        "transform='matrix(1 65536 0 1 0 0)' "
+        "d='M10 0h1v.0000152587890625h-1Z M20 20h10v10h-10Z'/>"
+        "</svg>",
+        target_width_mm=100.0,
+        tolerance_mm=0.02,
+    )
+
+    assert result.status == "supported", result.reason_code
+    assert result.reason_code == ""
+    assert result.unprintable_fragments.count == 0
+    grid_mm = result.grid_to_source_unit * result.scale_factor
+    perimeter_mm = 20.0 * np.hypot(1.0, 65536.0) + 20.0
+    error_mm = result.max_quantization_error_mm
+    area_error_mm2 = perimeter_mm * error_mm + np.pi * error_mm ** 2
+    for name in ("raw", "visible", "silhouette"):
+        collection = getattr(result, name)
+        assert collection.component_count == 2
+        assert collection.hole_count == 0
+        exact_component_areas = assert_valid_integer_components(collection)
+        coarse_area_mm2 = max(exact_component_areas) * 0.5 * grid_mm ** 2
+        assert coarse_area_mm2 == pytest.approx(100.0, abs=area_error_mm2)
+        count = collection.geometry_count
+        np.testing.assert_array_equal(collection.draw_indices, [0] * count)
+        if name == "silhouette":
+            assert count == 1
+            np.testing.assert_array_equal(collection.source_indices, [-1])
+            np.testing.assert_array_equal(collection.source_kinds, [2])
+            np.testing.assert_array_equal(collection.rgba, [[0, 0, 0, 255]])
+            np.testing.assert_array_equal(collection.rgba_f64, [[0, 0, 0, 1]])
+            np.testing.assert_array_equal(collection.contributor_offsets, [0, 0])
+            assert collection.contributor_draw_indices.size == 0
+            assert collection.contributor_source_indices.size == 0
+            assert collection.contributor_source_kinds.size == 0
+            assert collection.contributor_weights.size == 0
+        else:
+            assert count >= 1
+            np.testing.assert_array_equal(collection.source_indices, [1] * count)
+            np.testing.assert_array_equal(collection.source_kinds, [0] * count)
+            np.testing.assert_array_equal(
+                collection.rgba,
+                [[18, 52, 86, round(255 * opacity)]] * count,
+            )
+            np.testing.assert_allclose(
+                collection.rgba_f64,
+                [[18 / 255, 52 / 255, 86 / 255, opacity]] * count,
+                rtol=0.0,
+                atol=1e-15,
+            )
+            for index in range(count):
+                assert geometry_contributors(collection, index) == [
+                    (0, 1, 0, opacity)
+                ]
+
+
+@pytest.mark.parametrize("opacity", [1.0, 0.5, 0.25])
+def test_nearly_singular_fill_has_nonoverlapping_shell_hierarchy(
+    opacity: float,
+) -> None:
+    result = lumina_svg_core.analyze_svg_svg(
+        '<svg xmlns="http://www.w3.org/2000/svg" '
+        'viewBox="0 0 100 100" width="100" height="100">'
+        '<path transform="matrix(1 1 0 0.0000000001 50 50)" '
+        f'fill="#ff0000" fill-opacity="{opacity}" '
+        'd="M7 -1L-6 -3L-5 1L6 4L6 -6L-3 2L-1 -1L10 100000000000Z"/>'
+        '</svg>',
+        target_width_mm=100.0,
+        tolerance_mm=0.02,
+        allow_strokes=True,
+    )
+
+    assert result.status == "supported", result.reason_code
+    assert result.reason_code == ""
+    assert result.unprintable_fragments.count == 0
+    grid_step_mm = result.grid_to_source_unit * result.scale_factor
+    source_points = [
+        [7, -1], [-6, -3], [-5, 1], [6, 4], [6, -6], [-3, 2],
+        [-1, -1], [10, 100000000000],
+    ]
+    # Exact authored NonZero area: -signed area - the winding -2 face area
+    # + twice the winding +1 triangle area. Independent rational face splitting
+    # and a vertical sweep agree; the transform determinant is 1/10**10.
+    source_area = Fraction(
+        358147636428455151200902155802872784667,
+        895369090987684418179888164,
+    )
+    scale = Fraction.from_float(result.scale_factor)
+    source_area_mm2 = source_area / 10**10 * scale ** 2
+    transformed_source = [
+        (Fraction(x + 50), Fraction(x + 50) + Fraction(y, 10**10))
+        for x, y in source_points
+    ]
+    # L1 bounds the eight segment lengths (120.000000001 source units).
+    # Their radius-r capsules bound changed area by 2*r*sum(lengths)+N*pi*r²;
+    # use pi <= 4, including the reported source/flattening boundary error.
+    perimeter_l1_mm = scale * sum(
+        abs(b[0] - a[0]) + abs(b[1] - a[1])
+        for a, b in zip(transformed_source,
+                        transformed_source[1:] + transformed_source[:1],
+                        strict=True)
+    )
+    radius_mm = (Fraction.from_float(result.max_flattening_error_mm)
+                 + Fraction.from_float(result.max_quantization_error_mm))
+    area_error_mm2 = (2 * radius_mm * perimeter_l1_mm
+                      + 4 * len(source_points) * radius_mm ** 2)
+    # The independent exact probe is inside the shell and its negative ring.
+    # A second export union used to fill this originally empty point.
+    hole_probe = (Fraction(1454000000002, 3), Fraction(1454000000002, 3))
+    source_probe = (hole_probe[0] / 10**10 - 50, Fraction(0))
+    assert _exact_ring_winding(source_points + source_points[:1], source_probe) == 0
+    for name in ("raw", "visible", "silhouette"):
+        collection = getattr(result, name)
+        assert collection.geometry_count == 1
+        assert collection.component_count == 1
+        assert collection.hole_count == 1
+        component_area2 = assert_valid_integer_components(collection)[0]
+        actual_area_mm2 = (Fraction(component_area2, 2)
+                           * Fraction.from_float(grid_step_mm) ** 2)
+        assert abs(actual_area_mm2 - source_area_mm2) <= area_error_mm2
+        ring_windings = []
+        for start, end in zip(collection.ring_offsets[:-1],
+                              collection.ring_offsets[1:], strict=True):
+            points = collection.coordinates[int(start):int(end)].tolist()
+            ring_windings.append(_exact_ring_winding(points, hole_probe))
+        assert ring_windings == [1, -1]
+        assert sum(ring_windings) == 0
+        hole = collection.coordinates[int(collection.ring_offsets[1]):].tolist()
+        assert sum(a[0] * b[1] - a[1] * b[0]
+                   for a, b in zip(hole, hole[1:])) == -16000000001
+        assert collection.draw_indices.tolist() == [0]
+        if name == "silhouette":
+            assert collection.source_indices.tolist() == [-1]
+            assert collection.source_kinds.tolist() == [2]
+            assert collection.rgba.tolist() == [[0, 0, 0, 255]]
+            assert collection.rgba_f64[0] == pytest.approx((0, 0, 0, 1))
+            assert collection.contributor_offsets.tolist() == [0, 0]
+        else:
+            assert collection.source_indices.tolist() == [1]
+            assert collection.source_kinds.tolist() == [0]
+            assert collection.rgba.tolist() == [
+                [255, 0, 0, round(255 * opacity)]
+            ]
+            assert collection.rgba_f64[0] == pytest.approx(
+                (1, 0, 0, opacity), abs=1e-15,
+            )
+            assert geometry_contributors(collection, 0) == pytest.approx(
+                [(0, 1, 0, opacity)]
+            )
+    # The existing noder routes this normalized contact once. The redundant
+    # export union filled the empty probe below and hid that routing.
+    assert result.max_quantization_error_mm == pytest.approx(
+        (1.0 / np.sqrt(2.0) + 1.0) * grid_step_mm,
+        rel=1e-15,
+        abs=0.0,
+    )
+    assert (result.max_flattening_error_mm
+            + result.max_quantization_error_mm) <= 0.6 * 0.02
+
+
+@pytest.mark.parametrize("opacity", [1.0, 0.5, 0.25])
+def test_self_touch_and_t_contact_keep_independent_shells_and_holes(
+    opacity: float,
+) -> None:
+    # Two holed squares share one corner; a triangle meets an edge interior.
+    result = lumina_svg_core.analyze_svg_svg(
+        "<svg viewBox='0 0 60 60'>"
+        f"<path fill='red' fill-opacity='{opacity}' "
+        "d='M10 10H30V30H10Z M15 15V20H20V15Z "
+        "M30 30H50V50H30Z M35 35V40H40V35Z "
+        "M20 10L15 0L25 0Z'/></svg>",
+        target_width_mm=60.0,
+        tolerance_mm=0.02,
+    )
+
+    assert result.status == "supported", result.reason_code
+    assert result.reason_code == ""
+    assert result.unprintable_fragments.count == 0
+    assert (result.max_flattening_error_mm
+            + result.max_quantization_error_mm) <= 0.6 * 0.02
+    for name in ("raw", "visible", "silhouette"):
+        collection = getattr(result, name)
+        assert_valid_integer_components(collection)
+        assert collection.geometry_count == 1
+        assert collection.component_count == 3
+        assert collection.hole_count == 2
+        shape = geometry_shape(result, collection, 0)
+        assert sorted(polygon.area for polygon in shape.geoms) == pytest.approx(
+            [50.0, 375.0, 375.0], abs=1e-8,
+        )
+        assert collection.draw_indices.tolist() == [0]
+        if name == "silhouette":
+            assert collection.source_indices.tolist() == [-1]
+            assert collection.source_kinds.tolist() == [2]
+            assert collection.rgba_f64[0] == pytest.approx((0, 0, 0, 1))
+        else:
+            assert collection.source_indices.tolist() == [1]
+            assert collection.source_kinds.tolist() == [0]
+            assert collection.rgba_f64[0] == pytest.approx(
+                (1, 0, 0, opacity), abs=1e-15,
+            )
+            assert geometry_contributors(collection, 0) == pytest.approx(
+                [(0, 1, 0, opacity)]
+            )
 
 
 def test_transparent_canvas_source_over_reference_contract() -> None:

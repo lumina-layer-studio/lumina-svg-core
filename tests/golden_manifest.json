@@ -16,7 +16,7 @@
         "0-0-255-255": 80.0,
         "255-0-0-255": 16.0
       },
-      "fingerprint": "6b016bac936a487183aceb6d4f5dbed10dda3969051b31a6190caebb48b4bd71"
+      "fingerprint": "bb527e04a66e54ba18c735784db23def8a1868eaa302971d19209d38e505b7d5"
     },
     {
       "file": "fill_rules_transforms.svg",
@@ -28,7 +28,7 @@
       "visible_components": 2,
       "visible_holes": 1,
       "area_by_rgba": {"229-57-53-255": 3192.0},
-      "fingerprint": "33b78656b61d08b6ed7bdd4e28493c97bc8b54aa5abfbd363ca21cb601b5c1d0"
+      "fingerprint": "1ad29e39069693f597b5bf018a3e089a43ec8ab6bca8758feb8f823c0119ba2c"
     },
     {
       "file": "strokes_clips_occlusion.svg",
@@ -45,7 +45,7 @@
         "30-136-229-255": 550.0,
         "67-160-71-255": 500.0
       },
-      "fingerprint": "34f939de056f11c02694ffe8e08f791866d4964806743356386d1bc639a28c96"
+      "fingerprint": "3b0524254946a049503b8b03ea61ee862ae60b1e804145cac23e1a212b4fbc8a"
     },
     {
       "file": "css_use.svg",
@@ -60,7 +60,7 @@
         "0-150-136-255": 72.0,
         "38-50-56-255": 128.0
       },
-      "fingerprint": "d67177b6579aa0d1d5d075f63065c8b73d672ae26dd586190e34b4b85a21c684"
+      "fingerprint": "fc73ec45514ac042924c0a3f385b423965d6b975131ccdd4ac91a3a84b7a9dee"
     },
     {
       "file": "overlap_islands.svg",
@@ -75,7 +75,7 @@
         "244-67-54-255": 1425.0,
         "33-150-243-255": 1100.0
       },
-      "fingerprint": "48f30dcf88b84242108f93228c8c0ad9e0f47b16de7445bb15711366cef8b4f7"
+      "fingerprint": "c9a28475bf20bd652fb09b0ba3fcc19356fc15495de2d20da3e646dd48fd1834"
     }
   ]
 }

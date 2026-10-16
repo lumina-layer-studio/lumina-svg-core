@@ -3233,60 +3233,11 @@ void appendRing(GeometryCollection& collection, const Path64& ring,
     collection.hole_parent.push_back(parent);
 }
 
-void appendOuterNode(GeometryCollection& collection, const PolyPath64& outer,
-                     ComplexityBudget& complexityBudget)
-{
-    if(outer.IsHole() || outer.Polygon().size() < 3)
-        return;
-    const auto outerRingIndex = static_cast<int64_t>(
-        collection.ring_offsets.size() - 1);
-    appendRing(collection, outer.Polygon(), -1, complexityBudget);
-    for(size_t index = 0; index < outer.Count(); ++index) {
-        const auto* child = outer.Child(index);
-        if(child->IsHole())
-            appendRing(
-                collection, child->Polygon(), outerRingIndex,
-                complexityBudget);
-    }
-    if(collection.polygon_offsets.size()
-            == collection.polygon_offsets.max_size())
-        throw ComplexityLimitError();
-    collection.polygon_offsets.push_back(collection.ring_offsets.size() - 1);
-}
-
-void appendPolyTree(GeometryCollection& collection, const PolyTree64& tree,
-                    ComplexityBudget& complexityBudget)
-{
-    std::vector<const PolyPath64*> pending;
-    pending.reserve(tree.Count());
-    for(size_t index = tree.Count(); index > 0; --index)
-        pending.push_back(tree.Child(index - 1));
-    while(!pending.empty()) {
-        const auto* outer = pending.back();
-        pending.pop_back();
-        appendOuterNode(collection, *outer, complexityBudget);
-        for(size_t holeIndex = outer->Count(); holeIndex > 0; --holeIndex) {
-            const auto* hole = outer->Child(holeIndex - 1);
-            for(size_t childIndex = hole->Count(); childIndex > 0;
-                    --childIndex) {
-                if(pending.size() == pending.max_size())
-                    throw ComplexityLimitError();
-                pending.push_back(hole->Child(childIndex - 1));
-            }
-        }
-    }
-}
-
-// A Clipper union is correct as a filled region, but its outline can touch or
-// cross itself, or a hole can touch its shell: two lobes meeting at one
-// vertex, a vertex sitting on a non-adjacent edge, a collinear run shared by
-// two rings, a genuine crossing, a hole that connects to the shell in two
-// places and pinches the region apart. OGC consumers reject every one of
-// those, so exported boundaries go through the shared canonical rule: the same
-// linework and the same filled region, emitted as the filled faces, which meet
-// only along their boundaries, with the shell/hole hierarchy rebuilt from
-// containment and nesting parity. A union that is already canonical is emitted
-// directly, unchanged.
+// Normalized boundaries can still have self-contacts, crossings, shared runs,
+// or shell/hole contacts. Export uses the shared canonical rule to express
+// filled faces with a valid shell/hole hierarchy for OGC consumers. Already
+// oriented, normalized paths need exact ring ownership, not another union that
+// can erase positive area.
 void appendCanonicalNode(GeometryCollection& collection,
                          const lumina::canonical::CanonicalNode<int64_t>& node,
                          ComplexityBudget& complexityBudget)
@@ -3314,61 +3265,83 @@ void appendCanonicalNode(GeometryCollection& collection,
     }
 }
 
-void appendCoveragePolyTree(GeometryCollection& collection,
-                            const PolyTree64& tree,
-                            ComplexityBudget& complexityBudget)
+std::vector<Paths64> takeCanonicalComponents(
+    lumina::canonical::CanonicalNode<int64_t>& tree)
 {
-    const auto paths = lumina::canonical::PolyTreePaths<int64_t>(tree);
-    // Node the linework to the grid before anything judges it. Splitting a
-    // segment at a quantized node moves where the pieces meet, so the pieces
-    // can meet again somewhere else; `NodeToGrid` is the shared rule's settle
-    // step for that, and the face build below requires its result.
-    bool already_canonical = false;
-    const auto noded =
-        lumina::canonical::NodeToGrid<int64_t>(paths, &already_canonical);
-    // A union whose rings are simple, non-degenerate, and meet only at shared
-    // vertices - at most one per ring pair - is already a legal expression of
-    // its region, so it is emitted as it stands, coordinates untouched.
-    if(already_canonical) {
-        appendPolyTree(collection, tree, complexityBudget);
-        return;
-    }
-    // Otherwise the same filled region is exported as the faces that meet only
-    // along their boundaries, which is what an OGC consumer can model.
-    lumina::canonical::CanonicalNode<int64_t> coverage;
-    lumina::canonical::BuildFacesFromNoded<int64_t>(noded, coverage);
-    appendCanonicalNode(collection, coverage, complexityBudget);
-}
-
-std::vector<Paths64> polyTreeComponents(const PolyTree64& tree)
-{
+    using Node = lumina::canonical::CanonicalNode<int64_t>;
     std::vector<Paths64> components;
-    std::vector<const PolyPath64*> pending;
-    pending.reserve(tree.Count());
-    for(size_t index = tree.Count(); index > 0; --index)
-        pending.push_back(tree.Child(index - 1));
+    std::vector<Node*> pending;
+    pending.reserve(tree.children.size());
+    for(auto child = tree.children.rbegin(); child != tree.children.rend();
+            ++child)
+        pending.push_back(child->get());
     while(!pending.empty()) {
-        const auto* outer = pending.back();
+        auto* outer = pending.back();
         pending.pop_back();
-        if(outer->IsHole() || outer->Polygon().size() < 3)
+        if(outer->is_hole || outer->path.size() < 3)
             continue;
         Paths64 component;
-        component.reserve(checkedSizeSum(outer->Count(), size_t{1}));
-        component.push_back(outer->Polygon());
-        for(size_t holeIndex = 0; holeIndex < outer->Count(); ++holeIndex) {
-            const auto* hole = outer->Child(holeIndex);
-            if(hole->IsHole() && hole->Polygon().size() >= 3)
-                component.push_back(hole->Polygon());
-            for(size_t childIndex = hole->Count(); childIndex > 0;
-                    --childIndex) {
+        component.reserve(checkedSizeSum(outer->children.size(), size_t{1}));
+        component.emplace_back(std::move(outer->path));
+        for(auto& hole : outer->children) {
+            if(hole->is_hole && hole->path.size() >= 3)
+                component.emplace_back(std::move(hole->path));
+        }
+        for(auto hole = outer->children.rbegin();
+                hole != outer->children.rend(); ++hole) {
+            for(auto child = (*hole)->children.rbegin();
+                    child != (*hole)->children.rend(); ++child) {
                 if(pending.size() == pending.max_size())
                     throw ComplexityLimitError("alpha_compositor_components");
-                pending.push_back(hole->Child(childIndex - 1));
+                pending.push_back(child->get());
             }
         }
         components.emplace_back(std::move(component));
     }
     return components;
+}
+
+void appendCoveragePaths(GeometryCollection& collection,
+                         const Paths64& paths,
+                         ComplexityBudget& complexityBudget,
+                         uint64_t& maximumNodingDisplacedPasses,
+                         std::vector<Paths64>* surfaceGroups)
+{
+    // Node original linework before classifying it. Integer contacts route
+    // their connected sets through cells met by the original edges; newly
+    // contacting sets rebuild from those same originals. Displacement is
+    // bounded once relative to original edges, rather than compounded across
+    // routed pieces, and its maximum is charged to the physical error budget.
+    bool already_canonical = false;
+    lumina::canonical::NodingStats nodingStats;
+    const auto noded =
+        lumina::canonical::NodeToGrid<int64_t>(
+            paths, &already_canonical, &nodingStats);
+    maximumNodingDisplacedPasses = std::max(
+        maximumNodingDisplacedPasses, nodingStats.displaced_passes);
+    lumina::canonical::CanonicalNode<int64_t> coverage;
+    if(already_canonical) {
+        // Rebuild nesting and NonZero coverage exactly without moving points.
+        lumina::canonical::BuildRingsFromNoded<int64_t>(noded, coverage);
+    } else {
+        // Complex settled linework needs faces. Its grid displacement is
+        // charged above, including any collapsed region.
+        lumina::canonical::BuildFacesFromNoded<int64_t>(noded, coverage);
+    }
+    appendCanonicalNode(collection, coverage, complexityBudget);
+    if(surfaceGroups != nullptr) {
+        if(already_canonical) {
+            // Export and alpha decomposition share the same exact ring tree.
+            *surfaceGroups = takeCanonicalComponents(coverage);
+        } else {
+            // A computational cell may contain multiple oriented contours.
+            // Keep the original NonZero sum together: containment alone cannot
+            // delete crossing contours, and export noding must not change the
+            // coordinates used by the independent composition pass.
+            surfaceGroups->clear();
+            surfaceGroups->emplace_back(paths);
+        }
+    }
 }
 
 size_t recordPolyTreeOutput(
@@ -3399,25 +3372,18 @@ size_t recordPolyTreeOutput(
 bool appendGeometry(GeometryCollection& collection,
                     const PaintGeometry& geometry,
                     ComplexityBudget& complexityBudget,
-                    std::vector<Paths64>* canonicalComponents = nullptr)
+                    uint64_t& maximumNodingDisplacedPasses,
+                    std::vector<Paths64>* surfaceGroups = nullptr)
 {
     if(geometry.paths.empty())
         return false;
-    PolyTree64 tree;
-    preflightNormalizedBoolean(complexityBudget, geometry.paths);
-    Clipper64 clipper;
-    clipper.AddSubject(geometry.paths);
-    if(!clipper.Execute(ClipType::Union, FillRule::NonZero, tree))
-        throw std::runtime_error("clipper_union_failed");
-    recordPolyTreeOutput(tree, complexityBudget);
-    if(canonicalComponents != nullptr)
-        *canonicalComponents = polyTreeComponents(tree);
     // A Paths64 difference can contain a redundant oriented ring at a
-    // touching boundary. Rebuilding the canonical PolyTree may remove that
+    // touching boundary. Rebuilding the canonical ring tree may remove that
     // ring without removing any filled area. Ring-count equality is therefore
     // not a validity invariant; only an empty canonical tree is a collapse.
     const size_t polygonCountBefore = collection.polygon_offsets.size();
-    appendCoveragePolyTree(collection, tree, complexityBudget);
+    appendCoveragePaths(collection, geometry.paths, complexityBudget,
+                        maximumNodingDisplacedPasses, surfaceGroups);
     if(collection.polygon_offsets.size() == polygonCountBefore)
         return false;
 
@@ -3866,7 +3832,25 @@ std::vector<Paths64> executeNormalizedBooleanComponents(
     if(!clipper.Execute(clipType, FillRule::NonZero, tree))
         throw std::runtime_error("clipper_boolean_failed");
     recordPolyTreeOutput(tree, complexityBudget);
-    return polyTreeComponents(tree);
+    auto paths = lumina::canonical::PolyTreePaths<int64_t>(tree);
+    if(paths.empty())
+        return {};
+    if(paths.size() > 1) {
+        // A single audit proves the simple-linework premise for exact nesting.
+        // Its noded coordinates never replace complex compositor input.
+        lumina::canonical::BoundaryNoder<int64_t> audit(paths);
+        const auto noded = audit.Run();
+        if(audit.Canonical()) {
+            lumina::canonical::CanonicalNode<int64_t> coverage;
+            lumina::canonical::BuildRingsFromNoded<int64_t>(noded, coverage);
+            return takeCanonicalComponents(coverage);
+        }
+    }
+    // One group preserves every original oriented contour of this boolean
+    // result, including crossing or touching linework, under NonZero filling.
+    std::vector<Paths64> groups;
+    groups.emplace_back(std::move(paths));
+    return groups;
 }
 
 SurfaceCell blendedCell(const SurfaceCell& destination,
@@ -4715,7 +4699,8 @@ std::shared_ptr<NativeResult> buildResult(RecorderResult recording,
         result->reason_code = "unsupported_topology_dynamic_range";
         return result;
     }
-    result->max_quantization_error_mm = gridStepMm / std::sqrt(2.0);
+    const double baseQuantizationErrorMm = gridStepMm / std::sqrt(2.0);
+    result->max_quantization_error_mm = baseQuantizationErrorMm;
     result->grid_to_source_unit = gridStepMm / result->scale_factor;
     const double inputAndQuantizationErrorMm =
         maximumInputErrorSource * result->scale_factor
@@ -4784,15 +4769,31 @@ std::shared_ptr<NativeResult> buildResult(RecorderResult recording,
     const double maximumRecordedBoundaryErrorSource =
         maximumRelevantBoundaryErrorSource(
             topologyTrace, sourceBounds, recording.viewport);
-    const double maximumBoundaryErrorMm =
-        maximumRecordedBoundaryErrorSource * result->scale_factor
-        + result->max_quantization_error_mm;
-    if(!std::isfinite(maximumBoundaryErrorMm)
-            || maximumBoundaryErrorMm > toleranceMm * 0.6) {
-        result->status = "unsupported";
-        result->reason_code = "unsupported_input_precision";
+    uint64_t maximumNodingDisplacedPasses = 0;
+    const auto boundaryBudgetIsValid = [&]() {
+        const lumina::canonical::NodingStats stats{maximumNodingDisplacedPasses};
+        result->max_quantization_error_mm = baseQuantizationErrorMm;
+        if(maximumNodingDisplacedPasses != 0) {
+            const double displacementMm = std::nextafter(
+                stats.DisplacementBound() * gridStepMm,
+                std::numeric_limits<double>::infinity());
+            result->max_quantization_error_mm = std::nextafter(
+                baseQuantizationErrorMm + displacementMm,
+                std::numeric_limits<double>::infinity());
+        }
+        const double maximumBoundaryErrorMm =
+            maximumRecordedBoundaryErrorSource * result->scale_factor
+            + result->max_quantization_error_mm;
+        if(!std::isfinite(maximumBoundaryErrorMm)
+                || maximumBoundaryErrorMm > toleranceMm * 0.6) {
+            result->status = "unsupported";
+            result->reason_code = "unsupported_input_precision";
+            return false;
+        }
+        return true;
+    };
+    if(!boundaryBudgetIsValid())
         return result;
-    }
     const auto rawNormalizationStarted = std::chrono::steady_clock::now();
     result->topology_seconds = std::chrono::duration<double>(
         rawNormalizationStarted - topologyStarted).count();
@@ -4808,6 +4809,7 @@ std::shared_ptr<NativeResult> buildResult(RecorderResult recording,
             ? &paint.components : nullptr;
         if(!appendGeometry(
                 result->raw, paint, complexityBudget,
+                maximumNodingDisplacedPasses,
                 canonicalComponents)) {
             appendUnprintableFragment(
                 result->unprintable_fragments,
@@ -4820,6 +4822,8 @@ std::shared_ptr<NativeResult> buildResult(RecorderResult recording,
     const auto compositeStarted = std::chrono::steady_clock::now();
     result->normalization_raw_seconds = std::chrono::duration<double>(
         compositeStarted - rawNormalizationStarted).count();
+    if(!boundaryBudgetIsValid())
+        return result;
     if(!hasNonEmptyPaint(paints)) {
         if(!resultCensusIsValid(*result))
             throw std::runtime_error("native_result_census_failed");
@@ -4856,7 +4860,8 @@ std::shared_ptr<NativeResult> buildResult(RecorderResult recording,
     for(auto& visible : visiblePaints) {
         if(!visible.paths.empty()
                 && !appendGeometry(
-                    visibleCollection, visible, complexityBudget)) {
+                    visibleCollection, visible, complexityBudget,
+                    maximumNodingDisplacedPasses)) {
             appendUnprintableFragment(
                 result->unprintable_fragments,
                 UnprintableReason::AreaCollapse, visible);
@@ -4874,8 +4879,12 @@ std::shared_ptr<NativeResult> buildResult(RecorderResult recording,
     silhouette.source_kind = SourceKind::Silhouette;
     if(!silhouette.paths.empty()
             && !appendGeometry(
-                result->silhouette, silhouette, complexityBudget))
+                result->silhouette, silhouette, complexityBudget,
+                maximumNodingDisplacedPasses))
         throw std::runtime_error("silhouette_hierarchy_collapse");
+
+    if(!boundaryBudgetIsValid())
+        return result;
 
     if(!resultCensusIsValid(*result))
         throw std::runtime_error("native_result_census_failed");

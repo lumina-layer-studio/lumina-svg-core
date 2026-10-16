@@ -62,6 +62,10 @@ components. `schema_version` is the result contract version;
 seconds, and `replay_worker_count` reports the final geometry replay's worker
 count.
 
+The reported bounds concern boundary distance, not exact connectivity below
+the numerical grid. Sub-grid topology and fragment-diagnostic limits are
+described in [canonical boundaries](support.md#canonical-boundary-fixes).
+
 ## GeometryCollection
 
 All exposed arrays are C-contiguous, read-only NumPy views. A view keeps its

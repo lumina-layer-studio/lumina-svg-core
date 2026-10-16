@@ -7,7 +7,7 @@ if(CMAKE_HOST_APPLE AND NOT DEFINED ENV{MACOSX_DEPLOYMENT_TARGET})
   )
 endif()
 
-project(lumina_svg_core VERSION 0.3.2 LANGUAGES C CXX)
+project(lumina_svg_core VERSION 0.3.3 LANGUAGES C CXX)
 
 include(cmake/BuildProvenance.cmake)
 lumina_resolve_build_provenance("${CMAKE_CURRENT_SOURCE_DIR}")
