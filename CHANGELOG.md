@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.3.3 — Unreleased canonical-boundary fixes
+## 0.3.3 — Canonical-boundary fixes
 
 - Preserve thin positive faces and holes with exact integer area, winding and
   edge-order decisions, including cancellation beyond signed 128-bit sums.
@@ -19,13 +19,13 @@
   operations. Deterministic component order or ring starts can differ.
 - Add public synthetic regressions without redistributing private originals.
   Full-corpus, performance and distribution acceptance are tracked in the
-  pull request associated with issue #5; this section is not a release notice.
+  pull request associated with issue #5.
 
-尚未发布的 0.3.3 修正原生二维边界的整数精度、交点一致性及外壳/孔洞层级，
+0.3.3 修正原生二维边界的整数精度、交点一致性及外壳/孔洞层级，
 按原始真实接触关系有界拆分，不反复拆分已弯折的边，也不移动无关组件。
 删除导出时重复的合并，保住仍可表达的小色块和空白孔，保留必要的填充、裁剪与合成。
 保留现有坐标和结果协议，不涉及配色、网格或 3MF。公开回归只使用合成素材；
-完整素材库、性能与跨平台包的验收记录在工单 #5 关联的 PR 中，不代表已经发版。
+完整素材库、性能与跨平台包的验收记录在工单 #5 关联的 PR 中。
 
 ## 0.3.2 — PyPI publishing and recorder ownership
 

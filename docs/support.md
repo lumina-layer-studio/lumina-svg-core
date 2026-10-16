@@ -62,7 +62,7 @@ These errors originate in native 2D geometry, not mesh or 3MF generation.
 The historical comparison remains recorded in
 [recorder refactor PR #3](https://github.com/lumina-layer-studio/lumina-svg-core/pull/3).
 
-The unreleased 0.3.3 candidate corrects the mechanisms in the same canonical
+Version 0.3.3 corrects the mechanisms in the same canonical
 boundary module: exact area/winding/edge ordering, direction-independent
 rational intersection rounding, and bounded noding of original integer
 linework. Only exact-contact computation sets are routed through their owned
@@ -104,12 +104,13 @@ originals are not redistributed or matched by input identity. Whole-corpus
 geometry and warm performance evidence
 are reported in the pull request associated with
 [issue #5](https://github.com/lumina-layer-studio/lumina-svg-core/issues/5).
-Candidate CI artifacts are not a PyPI release.
+PR CI artifacts are not the published PyPI files; use the versioned PyPI page
+for installation.
 
 此前录制器重构对比了 508 份私有 SVG：目标宽度 220 mm、容差 0.02 mm、启用描边。
 旧版和新版均为 504 份 `supported`、4 份 `native_geometry_error`，输出差异为零；
 4 个失败不计作通过。它们都能完成绘制录制，其中 2 份关闭描边、仅分析填充时也失败。
-这些是既有原生二维几何错误，与网格或 3MF 导出无关。尚未发布的 0.3.3 候选在同一
+这些是既有原生二维几何错误，与网格或 3MF 导出无关。0.3.3 在同一
 规范边界模块中修正精确面积、绕数和边排序，让同一个交点不因计算方向不同而舍入到
 不同格点，并按原始真实交点分组做有界节点化，不移动无关组。新接触只会促使相关组
 从原始线段重建，不反复拆分已经弯折的输出；每次操作的额外保守边界误差最多一格，
@@ -127,7 +128,7 @@ Candidate CI artifacts are not a PyPI release.
 打印机精度、最小可打印面积或小洞补偿。
 公开回归使用合成小例子验证面积、洞、独立组件、方向一致性、有界点数、局部性和误差。
 原始私有素材不随包发布，不按素材身份匹配；完整素材库的几何及暖运行性能结果记录在
-上述工单关联的 PR 中。CI 候选构建不代表已经发布到 PyPI。
+上述工单关联的 PR 中。PR 的 CI 构建文件不是 PyPI 正式发行文件。
 
 ## Scope of the output
 

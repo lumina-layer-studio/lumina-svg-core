@@ -110,8 +110,8 @@ python tools/prepare_release.py assemble \
   --output-dir /tmp/lumina-svg-release
 ```
 
-These are post-merge release commands, not permission to tag or publish the
-unreleased 0.3.3 candidate. The tag must exist on HEAD, equal the version declared in both `pyproject.toml`
+These are post-merge release commands, not permission to tag or publish an
+unreviewed version. The tag must exist on HEAD, equal the version declared in both `pyproject.toml`
 and CMake, and be reachable from `origin/dev-refactor`. Fetch the current remote
 branch and tags before a local release check. Incoming downloads and output
 must be outside the source checkout. Keep the four wheel bundles and the sdist
@@ -144,21 +144,21 @@ no compiler; source builds still require the documented toolchain.
 
 ## Consumer installation / 使用者安装
 
-The current public PyPI release is 0.3.2:
+Install version 0.3.3 from PyPI:
 
 ```bash
-python -m pip install lumina-svg-core==0.3.2
+python -m pip install lumina-svg-core==0.3.3
 ```
 
-The [PyPI version page](https://pypi.org/project/lumina-svg-core/0.3.2/) and
-[completed publishing run](https://github.com/lumina-layer-studio/lumina-svg-core/actions/runs/38667556094)
-record the release. A matching prebuilt wheel installs without
+The [PyPI version page](https://pypi.org/project/lumina-svg-core/0.3.3/) and
+[publishing workflow](https://github.com/lumina-layer-studio/lumina-svg-core/actions/workflows/publish.yml)
+record the files and verification run. A matching prebuilt wheel installs without
 a third-party checkout, manual patch, local wheelhouse, or C++ compiler.
 Native-library source builds are a contributor workflow, not a prerequisite
 for using the library from a Python application source checkout. This project
 ships the native library; it does not ship a Lumina application installer.
 
-0.3.2 已在 PyPI 发布并完成安装验证，可使用上面的标准命令。
+0.3.3 可通过上面的标准命令从 PyPI 安装。
 匹配的预编译 wheel 无需额外克隆第三方库、
 手工打补丁、准备本地 wheelhouse 或编译 C++。原生库源码构建属于贡献者工作流，
 不是从 Python 应用源码调用本库的前置要求；本项目也不分发 Lumina 整套软件安装器。
@@ -171,15 +171,15 @@ upload and a fresh Linux PyPI install/runtime smoke. A separate fresh macOS
 arm64 environment also installed the published binary and exercised alpha,
 holes and read-only arrays without a compiler.
 
-The new 0.3.3 source version is an unreleased candidate. Its CI/source artifacts
-are for review; they do not replace 0.3.2 or change the ordinary PyPI route.
-It needs a separately reviewed merge and release decision before tagging/upload.
+Version 0.3.3 retains the same Python API and geometry schema. PR CI artifacts
+are review files; the released files are identified by the versioned PyPI page
+and the publishing workflow's source/hash receipt.
 
 2026-10-15，PR #3 和 #4 经授权合入后，已从上述提交发布 0.3.2：12 个 wheel 和
 源码包均已公开。发布工作流完成各平台构建测试、源码重建、上传及全新 Linux 环境的
 PyPI 安装和实际几何烟测；另一个全新 macOS arm64 环境也无需编译器安装并验证透明度、
-孔洞及只读数组。0.3.3 仍是未发布候选，CI 安装包仅供审阅，不覆盖 0.3.2 或改变
-普通 PyPI 安装方式；后续合入、打标签和发布需单独决定。
+孔洞及只读数组。0.3.3 保持 Python API 和几何协议不变；PR 的 CI 安装包仅供审阅，
+正式发行文件以 PyPI 版本页面和发布工作流的来源清单为准。
 
 ## PyPI publisher and release gate / PyPI 发布身份与门禁
 
@@ -203,7 +203,7 @@ alone does not grant PyPI ownership. See
 
 This Trusted Publisher and GitHub environment were used to publish 0.3.2.
 Their continued configuration does not authorize merging or publishing a new
-candidate. Confirm each actual release using its version page and completed
+version. Confirm each actual release using its version page and completed
 workflow.
 
 The GitHub `pypi` environment accepts `v*` tags and uses the maintainer
