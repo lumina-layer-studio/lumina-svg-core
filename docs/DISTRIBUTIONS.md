@@ -103,9 +103,9 @@ rejected instead of overwritten.
 metadata/license/source/hash validation with `require_clean=True`:
 
 ```bash
-python tools/prepare_release.py check-tag --tag v0.3.3
+python tools/prepare_release.py check-tag --tag v0.3.4
 python tools/prepare_release.py assemble \
-  --tag v0.3.3 \
+  --tag v0.3.4 \
   --incoming-dir /tmp/lumina-svg-incoming \
   --output-dir /tmp/lumina-svg-release
 ```
@@ -144,13 +144,13 @@ no compiler; source builds still require the documented toolchain.
 
 ## Consumer installation / 使用者安装
 
-Install version 0.3.3 from PyPI:
+Install version 0.3.4 from PyPI:
 
 ```bash
-python -m pip install lumina-svg-core==0.3.3
+python -m pip install lumina-svg-core==0.3.4
 ```
 
-The [PyPI version page](https://pypi.org/project/lumina-svg-core/0.3.3/) and
+The [PyPI version page](https://pypi.org/project/lumina-svg-core/0.3.4/) and
 [publishing workflow](https://github.com/lumina-layer-studio/lumina-svg-core/actions/workflows/publish.yml)
 record the files and verification run. A matching prebuilt wheel installs without
 a third-party checkout, manual patch, local wheelhouse, or C++ compiler.
@@ -158,7 +158,7 @@ Native-library source builds are a contributor workflow, not a prerequisite
 for using the library from a Python application source checkout. This project
 ships the native library; it does not ship a Lumina application installer.
 
-0.3.3 可通过上面的标准命令从 PyPI 安装。
+0.3.4 可通过上面的标准命令从 PyPI 安装。
 匹配的预编译 wheel 无需额外克隆第三方库、
 手工打补丁、准备本地 wheelhouse 或编译 C++。原生库源码构建属于贡献者工作流，
 不是从 Python 应用源码调用本库的前置要求；本项目也不分发 Lumina 整套软件安装器。

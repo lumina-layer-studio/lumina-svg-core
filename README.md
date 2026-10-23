@@ -16,7 +16,7 @@ the geometry engine, Python bindings, test fixtures, and build tools. It has no
 runtime dependency on Lumina Studio, its UI, printer settings, or application
 services. It does not generate meshes or 3MF files.
 
-**Status:** version 0.3.3 (alpha). CPython 3.12, 3.13 and 3.14 are supported.
+**Status:** version 0.3.4 (alpha). CPython 3.12, 3.13 and 3.14 are supported.
 The geometry result contract is schema version 4.
 
 ## Installation
@@ -26,10 +26,10 @@ The geometry result contract is schema version 4.
 Install the current public release from PyPI:
 
 ```bash
-python -m pip install lumina-svg-core==0.3.3
+python -m pip install lumina-svg-core==0.3.4
 ```
 
-See the [PyPI version page](https://pypi.org/project/lumina-svg-core/0.3.3/)
+See the [PyPI version page](https://pypi.org/project/lumina-svg-core/0.3.4/)
 and [publishing workflow](https://github.com/lumina-layer-studio/lumina-svg-core/actions/workflows/publish.yml)
 for the released files and their build/installation checks.
 
@@ -42,7 +42,7 @@ Alternatively, download a matching wheel from
 and install the downloaded file:
 
 ```bash
-python -m pip install /path/to/lumina_svg_core-0.3.3-cp314-cp314-platform.whl
+python -m pip install /path/to/lumina_svg_core-0.3.4-cp314-cp314-platform.whl
 ```
 
 Replace the example filename with the actual downloaded wheel. Wheels are built

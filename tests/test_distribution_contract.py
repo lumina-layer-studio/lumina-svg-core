@@ -137,6 +137,16 @@ def test_python_distribution_covers_supported_cpython_versions() -> None:
     ]
 
 
+def test_next_release_declares_matching_034_versions() -> None:
+    metadata = tomllib.loads(
+        (PACKAGE_ROOT / "pyproject.toml").read_text(encoding="utf-8")
+    )
+    cmake = (PACKAGE_ROOT / "CMakeLists.txt").read_text(encoding="utf-8")
+
+    assert metadata["project"]["version"] == "0.3.4"
+    assert "project(lumina_svg_core VERSION 0.3.4 " in cmake
+
+
 def test_release_workflow_pins_actions_to_immutable_commits() -> None:
     workflow = (
         PACKAGE_ROOT / ".github" / "workflows" / "wheels.yml"
