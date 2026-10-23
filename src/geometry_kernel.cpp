@@ -4531,7 +4531,23 @@ std::shared_ptr<NativeResult> buildResult(RecorderResult recording,
     }
     const bool needsClipBoundsPass = hasClipCommands
         && boundsPlan.clipped_paint_bounds.valid();
-    if(needsClipBoundsPass) {
+    SourceBounds viewportBounds;
+    includeViewport(viewportBounds, recording.viewport);
+    auto viewportAndPaintBounds = viewportBounds;
+    viewportAndPaintBounds.include(boundsPlan.clipped_paint_bounds);
+    const bool viewportDeterminesDimensions = viewportBounds.valid()
+        && viewportAndPaintBounds.max_x - viewportAndPaintBounds.min_x
+            == viewportBounds.max_x - viewportBounds.min_x
+        && viewportAndPaintBounds.max_y - viewportAndPaintBounds.min_y
+            == viewportBounds.max_y - viewportBounds.min_y;
+    if(needsClipBoundsPass && viewportDeterminesDimensions) {
+        // The budgeted bounds result is between the viewport and this union.
+        // Equal computed extents fix its final dimensions without replaying
+        // curves on the much finer sizing grid. Keep the union's origin too:
+        // a transform can leave a sub-ULP overhang without changing the size.
+        // Final replay still applies every clip and records fragment census.
+        sourceBounds = viewportAndPaintBounds;
+    } else if(needsClipBoundsPass) {
         const double coordinateWidth =
             boundsPlan.coordinate_bounds.max_x
             - boundsPlan.coordinate_bounds.min_x;

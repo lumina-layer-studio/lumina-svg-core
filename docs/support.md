@@ -38,6 +38,13 @@ that error contract. Precision that cannot be established returns
 `unsupported_input_precision`; the engine does not silently enlarge the
 tolerance or apply a minimum-area feature filter.
 
+When conservative clipped-paint bounds cannot enlarge the recorded viewport's
+computed width or height, that viewport already determines the output
+dimensions. Analysis keeps the union of those bounds and skips the discarded
+curve-sizing replay. Actual clipping, final numerical checks, and fragment
+diagnostics still run. Documents without a usable viewport, or with paint that
+enlarges it, retain the clip-aware bounds calculation.
+
 Malformed XML, file errors, invalid numeric state, actual allocation failures,
 and recursion cycles still fail. Desktop input is not rejected merely because
 of a configured byte, element, command, CSS-work, or elapsed-time quota. Integer

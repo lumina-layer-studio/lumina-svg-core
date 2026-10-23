@@ -138,3 +138,29 @@ def test_exact_duplicate_paints_keep_last_owner_with_bounded_lookup() -> None:
     large_elapsed = min(_duplicate_paints_elapsed(2400) for _ in range(2))
 
     assert large_elapsed < small_elapsed * 8.0 + 0.05
+
+
+def test_nested_viewport_bounds_use_physical_curve_precision() -> None:
+    curve = '<path d="M100 100C100 200 200 200 200 100Z" fill="black"/>'
+    plain = f'<svg viewBox="0 0 6552 4612">{curve}</svg>'
+    clipped = (
+        '<svg viewBox="0 0 6552 4612">'
+        '<svg width="6552" height="4612" viewBox="0 0 6552 4612">'
+        f'{curve}</svg></svg>'
+    )
+    timings: list[float] = []
+    for document in (plain, clipped):
+        runs: list[float] = []
+        for _ in range(3):
+            result = lumina_svg_core.analyze_svg_svg(
+                document, 230.0, 0.02, allow_strokes=False,
+            )
+            assert result.status == "supported", result.reason_code
+            assert result.raw.component_count == 1
+            assert result.visible.component_count == 1
+            runs.append(result.bounds_seconds)
+        timings.append(min(runs))
+
+    # A viewport around an unchanged curve must not cause a numeric-grid
+    # tessellation pass before the physical-tolerance geometry pass.
+    assert timings[1] < timings[0] * 100 + 0.01
