@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.3.4 — Clipped SVG bounds scaling
+
 - Avoid excessive curve subdivision in clipped-document sizing when the
   recorded viewport already fixes the final dimensions. Preserve the union of
   viewport and conservative paint bounds, including transform roundoff.

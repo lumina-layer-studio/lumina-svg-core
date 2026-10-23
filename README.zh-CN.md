@@ -10,7 +10,7 @@
 
 本项目最初用于 Lumina Studio，现作为独立仓库维护。运行时不依赖主程序、界面、打印机设置或应用服务。它负责二维几何分析，不生成网格或 3MF 文件。
 
-**版本：** 0.3.3（Alpha）。支持 CPython 3.12、3.13 和 3.14；几何结果协议版本为 4。
+**版本：** 0.3.4（Alpha）。支持 CPython 3.12、3.13 和 3.14；几何结果协议版本为 4。
 
 ## 安装
 
@@ -19,17 +19,17 @@
 从 PyPI 安装当前公开版本：
 
 ```bash
-python -m pip install lumina-svg-core==0.3.3
+python -m pip install lumina-svg-core==0.3.4
 ```
 
-参见 [PyPI 版本页面](https://pypi.org/project/lumina-svg-core/0.3.3/) 和[发布工作流](https://github.com/lumina-layer-studio/lumina-svg-core/actions/workflows/publish.yml)，核对正式文件及构建、安装检查。
+参见 [PyPI 版本页面](https://pypi.org/project/lumina-svg-core/0.3.4/) 和[发布工作流](https://github.com/lumina-layer-studio/lumina-svg-core/actions/workflows/publish.yml)，核对正式文件及构建、安装检查。
 
 匹配的预编译包不需要 C++ 编译器、额外克隆第三方库、手工打补丁或本地 wheelhouse。LunaSVG/PlutoVG 和 Clipper2 已由维护者编译到扩展中。
 
 也可以在 [GitHub Releases](https://github.com/lumina-layer-studio/lumina-svg-core/releases) 下载匹配的 wheel 后安装：
 
 ```bash
-python -m pip install /path/to/lumina_svg_core-0.3.3-cp314-cp314-platform.whl
+python -m pip install /path/to/lumina_svg_core-0.3.4-cp314-cp314-platform.whl
 ```
 
 请将示例文件名替换为实际下载的文件。构建目标包括 Windows x86-64、Apple Silicon Mac、Intel Mac 和 Linux x86-64。Python 3.12/3.13 的 Mac 安装包要求 macOS 12+，Python 3.14 要求 macOS 14+。Linux 使用 manylinux_2_28 基线，要求 glibc 2.28+；不覆盖 Alpine/musl、Windows ARM 或自由线程 Python。
