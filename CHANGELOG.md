@@ -1,5 +1,14 @@
 # Changelog
 
+## Unreleased
+
+- Avoid excessive curve subdivision in clipped-document sizing when the
+  recorded viewport already fixes the final dimensions. Preserve the union of
+  viewport and conservative paint bounds, including transform roundoff.
+- Keep final clipping, physical error budgets, tiny representable components,
+  and cancelled/clipped-out paint diagnostics. Visible overflow and documents
+  without a usable viewport retain the existing bounds path.
+
 ## 0.3.3 — Canonical-boundary fixes
 
 - Preserve thin positive faces and holes with exact integer area, winding and

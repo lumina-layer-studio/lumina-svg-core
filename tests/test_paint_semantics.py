@@ -1787,6 +1787,199 @@ def test_clip_bounds_prepass_respects_end_to_end_boundary_budget() -> None:
     assert physical.boundary.hausdorff_distance(expected.boundary) <= 0.02
 
 
+def test_viewport_clip_bounds_keep_a_tiny_representable_component() -> None:
+    result = lumina_svg_core.analyze_svg_svg(
+        '<svg viewBox="0 0 6552 4612">'
+        '<defs><clipPath id="c"><rect x="10" y="10" width="1" height="1"/>'
+        '</clipPath></defs>'
+        '<path d="M10.1 10.1h0.0001v0.0001Z" fill="red" clip-path="url(#c)"/>'
+        '</svg>', 230.0, 0.02, allow_strokes=False,
+    )
+
+    assert result.status == "supported", result.reason_code
+    assert result.raw.component_count == result.visible.component_count == 1
+    actual = geometry_shape(result, result.raw, 0)
+    assert actual.is_valid
+    assert actual.area == pytest.approx(5e-9, rel=0.001)
+    assert result.bbox == pytest.approx((0.0, 0.0, 6552.0, 4612.0))
+
+
+def test_viewport_clip_bounds_preserve_cancelled_fill_census() -> None:
+    result = lumina_svg_core.analyze_svg_svg(
+        "<svg viewBox='0 0 100 100'>"
+        "<svg width='100' height='100' viewBox='0 0 100 100'>"
+        "<path d='M10 10Q11 12 12 10Q11 12 10 10Z' fill-rule='evenodd'/>"
+        "<rect x='20' y='20' width='5' height='5' fill='red'/>"
+        "</svg></svg>", 100.0, 0.02, allow_strokes=False,
+    )
+
+    assert result.status == "supported", result.reason_code
+    assert result.input_paint_count == 2
+    assert result.raw.geometry_count == result.visible.geometry_count == 1
+    assert result.raw.draw_indices.tolist() == [1]
+    assert result.unprintable_fragments.reason_codes == ("fill_rule_cancelled",)
+    assert result.unprintable_fragments.draw_indices.tolist() == [0]
+    assert geometry_area(result, result.visible, 0) == pytest.approx(25.0)
+
+
+def test_viewport_clip_bounds_preserve_narrow_curve_fragment_census() -> None:
+    result = lumina_svg_core.analyze_svg_svg(
+        "<svg viewBox='0 0 6552 4612'><defs><clipPath id='c'>"
+        "<rect x='145' y='100.01' width='10' height='0.004'/>"
+        "</clipPath></defs><path d='M100 100C100 100.02 200 100.02 200 100"
+        "L200 0L100 0Z' clip-path='url(#c)'/></svg>",
+        230.0, 0.02, allow_strokes=False,
+    )
+
+    # Final replay's existing physical tolerance classifies this tiny
+    # intersection as a fragment. A discarded bounds pass must not replace
+    # that supported result and its paint census with a document rejection.
+    assert result.status == "supported", result.reason_code
+    assert result.input_paint_count == 1
+    assert result.raw.geometry_count == result.visible.geometry_count == 0
+    assert result.unprintable_fragments.reason_codes == ("clipped_out",)
+    assert result.unprintable_fragments.draw_indices.tolist() == [0]
+    assert result.bbox == pytest.approx((0.0, 0.0, 6552.0, 4612.0))
+
+
+def test_viewport_clip_bounds_keep_transform_origin_roundoff() -> None:
+    result = lumina_svg_core.analyze_svg_svg(
+        "<svg viewBox='0 0 100 100'>"
+        "<g transform='translate(0 -5e-20)'>"
+        "<svg width='100' height='100' viewBox='0 0 100 100'>"
+        "<rect width='100' height='100'/>"
+        "<path d='M10 10Q11 12 12 10Q11 12 10 10Z' fill-rule='evenodd'/>"
+        "</svg></g></svg>", 100.0, 0.02, allow_strokes=False,
+    )
+
+    assert result.status == "supported", result.reason_code
+    assert result.bbox[1] == pytest.approx(-5e-20, rel=1e-12, abs=0)
+    assert result.viewport_bounds[1] == pytest.approx(5e-20, rel=1e-12, abs=0)
+    assert result.bbox[2:] == (100.0, 100.0)
+    assert result.scale_factor == 1.0
+    assert result.raw.geometry_count == result.visible.geometry_count == 1
+    assert result.unprintable_fragments.reason_codes == ("fill_rule_cancelled",)
+
+
+def test_viewport_clip_bounds_preserve_visible_overflow_dimensions() -> None:
+    result = lumina_svg_core.analyze_svg_svg(
+        "<svg viewBox='0 0 100 100' overflow='visible'>"
+        "<defs><clipPath id='c'><rect x='-1' y='-1' width='102' height='102'/>"
+        "</clipPath></defs>"
+        "<rect x='-0.25' y='-0.5' width='100.5' height='101' "
+        "clip-path='url(#c)'/></svg>", 230.0, 0.02, allow_strokes=False,
+    )
+
+    assert result.status == "supported", result.reason_code
+    assert result.bbox == pytest.approx((-0.25, -0.5, 100.5, 101.0))
+    assert result.scale_factor == pytest.approx(230.0 / 100.5)
+    actual = geometry_shape(result, result.visible, 0)
+    assert actual.bounds == pytest.approx((0.0, 0.0, 100.5, 101.0))
+
+
+@pytest.mark.parametrize("extent", [1e8, 1e12, 1e16])
+def test_small_viewport_does_not_reject_large_visible_clipped_geometry(
+    extent: float,
+) -> None:
+    result = lumina_svg_core.analyze_svg_svg(
+        '<svg viewBox="0 0 1 1" overflow="visible">'
+        '<defs><clipPath id="c">'
+        f'<rect width="{extent:g}" height="{extent:g}"/>'
+        '</clipPath></defs>'
+        f'<rect width="{extent:g}" height="{extent:g}" clip-path="url(#c)"/>'
+        '</svg>', 100.0, 0.02, allow_strokes=False,
+    )
+
+    assert result.status == "supported", result.reason_code
+    assert result.raw.component_count == result.visible.component_count == 1
+    assert result.bbox == pytest.approx((0.0, 0.0, extent, extent))
+    assert result.scale_factor == pytest.approx(100.0 / extent)
+    actual = geometry_shape(result, result.raw, 0)
+    physical = shapely.affinity.scale(
+        actual, result.scale_factor, result.scale_factor, origin=(0, 0),
+    )
+    assert physical.boundary.hausdorff_distance(box(0, 0, 100, 100).boundary) <= 0.02
+
+
+@pytest.mark.parametrize(
+    "root_matrix",
+    [
+        (1, 0, 0, 1, 0, 0),
+        (0, 1, -1, 0, 240, 0),
+        (1.5, 0.2, 0.4, 0.75, -20, 15),
+    ],
+    ids=["identity", "rotation", "nonuniform-shear"],
+)
+@pytest.mark.parametrize("paint", ["fill", "stroke", "non-scaling-stroke"])
+def test_viewport_clip_bounds_respect_transformed_curve_error_budget(
+    root_matrix: tuple[float, ...], paint: str,
+) -> None:
+    # The root's nonzero viewBox origin and the nested viewport map local
+    # points to (x + 20, y + 20), before applying the root transform.
+    curve_path = "M-10 40C-10 0 110 0 110 40"
+    if paint == "fill":
+        path = curve_path + "L110 90L-10 90Z"
+        style = "fill='red'"
+    else:
+        path = curve_path
+        style = "fill='none' stroke='red' stroke-width='4' stroke-linecap='round'"
+        if paint == "non-scaling-stroke":
+            style += " vector-effect='non-scaling-stroke'"
+    matrix_text = " ".join(map(str, root_matrix))
+    result = lumina_svg_core.analyze_svg_svg(
+        "<svg width='240' height='160' viewBox='10 20 120 80' "
+        f"preserveAspectRatio='none' transform='matrix({matrix_text})' "
+        "overflow='visible'>"
+        "<svg x='20' y='30' width='50' height='40' viewBox='0 0 100 80' "
+        "preserveAspectRatio='none'>"
+        "<defs><clipPath id='c'>"
+        "<rect x='-5' y='5' width='85' height='95'/></clipPath></defs>"
+        f"<path d='{path}' {style} clip-path='url(#c)'/>"
+        "</svg></svg>", 230.0, 0.02,
+    )
+
+    assert result.status == "supported", result.reason_code
+    assert result.raw.geometry_count == result.visible.geometry_count == 1
+    # Independently sample the analytic Bezier, clip with GEOS, and apply the
+    # known SVG matrices; no recorder/bounds helper supplies the oracle.
+    t = np.linspace(0.0, 1.0, 8193)[:, None]
+    points = (
+        (1 - t) ** 3 * [-10, 40]
+        + 3 * (1 - t) ** 2 * t * [-10, 0]
+        + 3 * (1 - t) * t ** 2 * [110, 0]
+        + t ** 3 * [110, 40]
+    )
+    a, b, c, d, e, f = root_matrix
+    combined_matrix = [a, c, b, d, e + 20 * a + 20 * c, f + 20 * b + 20 * d]
+    local_clip = box(0, 0, 100, 80).intersection(box(-5, 5, 80, 100))
+    if paint == "non-scaling-stroke":
+        reference = shapely.affinity.affine_transform(
+            LineString(points), combined_matrix,
+        ).buffer(2.0, quad_segs=128).intersection(
+            shapely.affinity.affine_transform(local_clip, combined_matrix),
+        )
+    else:
+        local_paint = (
+            Polygon(np.concatenate((points, [[110, 90], [-10, 90]])))
+            if paint == "fill"
+            else LineString(points).buffer(2.0, quad_segs=128)
+        )
+        reference = shapely.affinity.affine_transform(
+            local_paint.intersection(local_clip), combined_matrix,
+        )
+    assert reference.is_valid and not reference.is_empty
+    for collection in (result.raw, result.visible):
+        actual = translate(
+            geometry_shape(result, collection, 0),
+            xoff=result.bbox[0], yoff=result.bbox[1],
+        )
+        assert actual.is_valid and not actual.is_empty
+        assert (
+            actual.boundary.hausdorff_distance(reference.boundary)
+            * result.scale_factor <= 0.02
+        )
+
+
 def test_disabled_stroke_policy_omits_strokes_without_losing_fills() -> None:
     result = lumina_svg_core.analyze_svg_svg(
         "<svg viewBox='0 0 40 20'>"
