@@ -37,3 +37,23 @@ python tools/benchmark.py \
 Compare equivalent warm runs on the same host and compiler configuration.
 Memory/swap measurements are diagnostic. Application mesh generation, material
 matching, and slicing are outside this standalone benchmark.
+
+## Compositor scaling
+
+Ordinary pytest runs verify the geometry, final paint owner, and color of the
+small and large compositor cases. They do not fail based on short wall-clock
+measurements on shared CI runners.
+
+To measure these cases separately:
+
+```bash
+python tools/benchmark_compositor.py --warm-runs 7 --output build/compositor.json
+```
+
+This command keeps the same correctness assertions, discards one warm-up per
+size, interleaves small/large inputs, and records every warm sample, medians,
+ratios, host information, and the installed runtime revision. The nested viewport
+case records the engine's bounds-stage timing; the other cases measure the full
+analysis call. Timing results are diagnostic, not a pass/fail gate. Compare
+repeated measurements on an equivalent host/build before investigating a
+performance regression; this report is not a newly invented historical baseline.
