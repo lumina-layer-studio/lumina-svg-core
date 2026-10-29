@@ -312,9 +312,7 @@ def test_nearly_singular_fill_has_nonoverlapping_shell_hierarchy(
             assert collection.rgba_f64[0] == pytest.approx(
                 (1, 0, 0, opacity), abs=1e-15,
             )
-            assert geometry_contributors(collection, 0) == pytest.approx(
-                [(0, 1, 0, opacity)]
-            )
+            assert geometry_contributors(collection, 0) == [(0, 1, 0, opacity)]
     # The existing noder routes this normalized contact once. The redundant
     # export union filled the empty probe below and hid that routing.
     assert result.max_quantization_error_mm == pytest.approx(
@@ -367,9 +365,7 @@ def test_self_touch_and_t_contact_keep_independent_shells_and_holes(
             assert collection.rgba_f64[0] == pytest.approx(
                 (1, 0, 0, opacity), abs=1e-15,
             )
-            assert geometry_contributors(collection, 0) == pytest.approx(
-                [(0, 1, 0, opacity)]
-            )
+            assert geometry_contributors(collection, 0) == [(0, 1, 0, opacity)]
 
 
 def test_transparent_canvas_source_over_reference_contract() -> None:
@@ -639,20 +635,16 @@ def test_partial_paint_alpha_is_composited_over_a_transparent_root() -> None:
     assert result.visible.rgba_f64[blue_index] == pytest.approx(
         (0.0, 0.0, 1.0, 0.5), abs=1e-15
     )
-    assert geometry_contributors(result.visible, red_index) == pytest.approx(
-        [(0, int(result.raw.source_indices[0]), 0, 0.5)]
-    )
-    assert geometry_contributors(
-        result.visible, overlap_index
-    ) == pytest.approx(
-        [
-            (0, int(result.raw.source_indices[0]), 0, 0.25),
-            (1, int(result.raw.source_indices[1]), 0, 0.5),
-        ]
-    )
-    assert geometry_contributors(result.visible, blue_index) == pytest.approx(
-        [(1, int(result.raw.source_indices[1]), 0, 0.5)]
-    )
+    assert geometry_contributors(result.visible, red_index) == [
+        (0, int(result.raw.source_indices[0]), 0, 0.5)
+    ]
+    assert geometry_contributors(result.visible, overlap_index) == [
+        (0, int(result.raw.source_indices[0]), 0, 0.25),
+        (1, int(result.raw.source_indices[1]), 0, 0.5),
+    ]
+    assert geometry_contributors(result.visible, blue_index) == [
+        (1, int(result.raw.source_indices[1]), 0, 0.5)
+    ]
     assert result.visible.source_kinds[overlap_index] == 3
     assert result.visible.draw_indices[overlap_index] == -1
     assert result.visible.source_indices[overlap_index] == -1
@@ -781,12 +773,12 @@ def test_group_opacity_is_applied_after_children_are_composited() -> None:
     assert result.visible.rgba_f64[blue_index] == pytest.approx(
         (0.0, 0.0, 1.0, 0.5), abs=1e-15
     )
-    assert geometry_contributors(result.visible, red_index) == pytest.approx(
-        [(0, int(result.raw.source_indices[0]), 0, 0.5)]
-    )
-    assert geometry_contributors(result.visible, blue_index) == pytest.approx(
-        [(1, int(result.raw.source_indices[1]), 0, 0.5)]
-    )
+    assert geometry_contributors(result.visible, red_index) == [
+        (0, int(result.raw.source_indices[0]), 0, 0.5)
+    ]
+    assert geometry_contributors(result.visible, blue_index) == [
+        (1, int(result.raw.source_indices[1]), 0, 0.5)
+    ]
 
 
 def test_isolated_group_is_composited_once_over_earlier_content() -> None:
