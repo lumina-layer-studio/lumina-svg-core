@@ -4,63 +4,45 @@
 [![Python 3.12–3.14](https://img.shields.io/badge/python-3.12%E2%80%933.14-blue.svg)](https://www.python.org/downloads/)
 [![License: AGPL v3](https://img.shields.io/badge/license-AGPL--3.0--only-blue.svg)](LICENSE)
 
-[English](README.md) | [简体中文](README.zh-CN.md)
+[English](README.md) · [简体中文](README.zh-CN.md) · [Installation](#installation) · [Quick start](#quick-start) · [API reference](docs/api.md) · [SVG support](docs/support.md)
 
-A native SVG geometry engine for print workflows. `lumina-svg-core` resolves SVG
-paint operations, converts them into polygons, and exposes the result to Python
-as read-only NumPy arrays. It preserves paint order, holes, clipping, solid-color
-alpha compositing, and the identity of contributing paints.
+A native C++17 and Python 2D SVG geometry engine for print workflows.
 
-Originally developed for Lumina Studio, this independent repository contains
-the geometry engine, Python bindings, test fixtures, and build tools. It has no
-runtime dependency on Lumina Studio, its UI, printer settings, or application
-services. It does not generate meshes or 3MF files.
+`lumina-svg-core` resolves SVG paint operations, converts fills and strokes into planar polygons, and returns the result to Python as read-only NumPy arrays while preserving paint order, holes, clipping, solid-color alpha compositing, and paint provenance.
 
-**Status:** version 0.3.4 (alpha). CPython 3.12, 3.13 and 3.14 are supported.
-The geometry result contract is schema version 4.
+Originally built for [Lumina Studio](https://github.com/lumina-layer-studio/Lumina-Layers), `lumina-svg-core` is maintained in this independent repository with its C++ geometry kernel, pybind11 bindings, test suite, and cross-platform wheel tooling, so any Python tool can use it directly.
+
+**Current release:** `0.3.4` (alpha) · **Python:** CPython `3.12`, `3.13`, `3.14` · **Geometry schema:** v4
 
 ## Installation
 
 ### Prebuilt wheels
 
-Install the current public release from PyPI:
+Install from PyPI:
 
 ```bash
 python -m pip install lumina-svg-core==0.3.4
 ```
 
-See the [PyPI version page](https://pypi.org/project/lumina-svg-core/0.3.4/)
-and [publishing workflow](https://github.com/lumina-layer-studio/lumina-svg-core/actions/workflows/publish.yml)
-for the released files and their build/installation checks.
-
-No C++ compiler, third-party checkout, manual patch, or local wheelhouse is
-needed for a matching prebuilt wheel.
-LunaSVG/PlutoVG and Clipper2 are compiled into the extension by maintainers.
-
-Alternatively, download a matching wheel from
-[GitHub Releases](https://github.com/lumina-layer-studio/lumina-svg-core/releases)
-and install the downloaded file:
+Or download a matching wheel from [GitHub Releases](https://github.com/lumina-layer-studio/lumina-svg-core/releases) and install it locally:
 
 ```bash
-python -m pip install /path/to/lumina_svg_core-0.3.4-cp314-cp314-platform.whl
+python -m pip install /path/to/lumina_svg_core-0.3.4-cp312-cp312-platform.whl
 ```
 
-Replace the example filename with the actual downloaded wheel. Wheels are built
-for Windows x86-64, macOS Apple Silicon, macOS Intel, and Linux x86-64. macOS
-requires version 12 or newer for Python 3.12/3.13, and version 14 or newer for
-Python 3.14. Linux wheels use `manylinux_2_28` and require glibc 2.28 or newer;
-Alpine/musl, Windows ARM and free-threaded Python are not covered.
-Match the wheel's OS, CPU and Python tags.
+Pinned LunaSVG/PlutoVG and Clipper2 sources are compiled directly into the prebuilt wheels:
 
-### Build the native library from source (contributors)
+| Platform | Architecture | Baseline |
+| --- | --- | --- |
+| Windows | x86-64 | 64-bit CPython 3.12–3.14 |
+| macOS | Apple Silicon (`arm64`) & Intel (`x86_64`) | macOS 12+ (Python 3.12/3.13), macOS 14+ (Python 3.14) |
+| Linux | x86-64 | `manylinux_2_28` (glibc 2.28+) |
 
-You need CPython 3.12–3.14, Git, and a C++17 compiler: MSVC on Windows, Apple Clang on
-macOS, or GCC/Clang on Linux. The build installs its pinned Python build tools
-and fetches pinned LunaSVG and Clipper2 source revisions, so network access is
-required for a fresh build.
+Release artifacts and build checks are also listed on the [PyPI version page](https://pypi.org/project/lumina-svg-core/0.3.4/) and [publishing workflow](https://github.com/lumina-layer-studio/lumina-svg-core/actions/workflows/publish.yml).
 
-This is the library contributor workflow, not a prerequisite for running
-Lumina Studio from its Python/TypeScript source.
+### Build from source
+
+Building from source requires CPython 3.12–3.14, Git, network access (to fetch pinned LunaSVG and Clipper2 revisions on first build), and a C++17 compiler — MSVC on Windows, Apple Clang on macOS, or GCC/Clang on Linux:
 
 ```bash
 git clone https://github.com/lumina-layer-studio/lumina-svg-core.git
@@ -71,9 +53,7 @@ python -m pip install --upgrade pip
 python -m pip install .
 ```
 
-On Windows, use `py -3.12 -m venv .venv` and activate it with
-`.venv\Scripts\Activate.ps1` in PowerShell. Run the build from a Visual Studio
-developer shell if MSVC is not already available on your command line.
+On Windows PowerShell, create the virtual environment with `py -3.12 -m venv .venv`, activate it via `.venv\Scripts\Activate.ps1`, and run from a Visual Studio Developer PowerShell if MSVC is not already on `PATH`.
 
 ## Quick start
 
@@ -96,7 +76,7 @@ if result.status != "supported":
 print(result.visible.geometry_count)
 print(result.visible.rgba_f64)
 
-# Coordinates are an integer working grid, not SVG units or millimetres.
+# Convert integer working-grid coordinates to millimetres:
 coordinates_mm = (
     result.visible.coordinates.astype("float64")
     * result.grid_to_source_unit
@@ -104,69 +84,33 @@ coordinates_mm = (
 )
 ```
 
-To read a file, use
-`lumina_svg_core.analyze_svg("drawing.svg", target_width_mm=40.0, tolerance_mm=0.02)`.
-Paths may also be `pathlib.Path` instances. Both analysis entry points accept
-`allow_strokes=False` to omit stroke paints while retaining fills.
+- **Analyze a file:** `lumina_svg_core.analyze_svg("drawing.svg", target_width_mm=40.0, tolerance_mm=0.02)` (accepts `str` or `pathlib.Path`).
+- **Fills only:** Pass `allow_strokes=False` to either function to skip strokes while keeping filled regions.
+- **Build provenance:** Inspect `lumina_svg_core.__version__`, `lumina_svg_core.__source_revision__`, and `lumina_svg_core.__source_dirty__`. See [docs/DISTRIBUTIONS.md](docs/DISTRIBUTIONS.md) for provenance and release receipt details.
 
-Inspect the installed build with `lumina_svg_core.__version__`,
-`lumina_svg_core.__source_revision__` and `lumina_svg_core.__source_dirty__`.
-Git-free source builds report unknown provenance unless the builder supplies
-it explicitly. [Distribution preparation](docs/DISTRIBUTIONS.md) describes
-the build identity and checked file receipts.
+Full ring traversal, status codes, coordinate units, and lower-level recording/grid APIs are documented in [docs/api.md](docs/api.md).
 
-See the [API reference](docs/api.md) for ring traversal, result statuses, source
-identity, coordinate units, and the lower-level recording and grid APIs.
+## Supported SVG features
 
-## SVG support
-
-| Supported | Details |
+| Category | Supported features |
 | --- | --- |
-| Solid fills and strokes | Fill rules, caps, joins, supported dash arrays, and non-scaling strokes |
-| Shapes and paths | Rectangles, rounded rectangles, circles, ellipses, polygons, and SVG path curves/arcs |
-| Layout | Affine transforms, viewBox origins, nested SVG viewports, and percentage lengths |
-| References and styles | Supported CSS selectors and same-document `<use>` references |
-| Clipping and markers | Vector clips, marker paints, and viewport clipping |
-| Transparency | Solid-paint alpha and isolated object/group opacity with normal source-over compositing |
+| Solid fills and strokes | Fill rules (`nonzero`, `evenodd`), line caps, line joins, dash arrays (positive lengths), and `non-scaling-stroke` |
+| Shapes and paths | `<rect>` (including rounded corners), `<circle>`, `<ellipse>`, `<polygon>`, `<polyline>`, `<line>`, and `<path>` curves/arcs |
+| Layout | Affine `transform`, `viewBox` origins, nested `<svg>` viewports, and percentage lengths |
+| References and styles | Supported CSS selectors and same-document `<use>` elements |
+| Clipping and markers | `<clipPath>`, marker paints, and viewport clipping |
+| Transparency | Solid-paint alpha and isolated object/group `opacity` composited with normal `source-over` in premultiplied sRGB |
 
-The SVG root begins transparent. The engine introduces no white background or
-printer-material matte. Fully opaque documents use reverse-order occlusion;
-translucent documents are partitioned and composited in premultiplied sRGB.
+The SVG canvas starts transparent. Fully opaque documents resolve occlusion in reverse paint order, while translucent documents partition overlapping regions and composite their colors in premultiplied sRGB.
 
-Masks, gradients, patterns, text, embedded images, external resources, non-normal
-blend modes, non-sRGB interpolation, and other unsupported semantics return a
-whole-document `unsupported` result. Zero-length dash entries are also
-unsupported. See [support and numerical limits](docs/support.md).
+When a document uses features outside the 2D solid-paint subset — such as gradients, patterns, masks, `<text>`, embedded bitmaps, external references, non-normal blend modes, non-sRGB color interpolation, or zero-length dash entries — the analyzer returns `status == "unsupported"` with a specific `reason_code` so callers can handle it explicitly. See [docs/support.md](docs/support.md) for full details and numerical limits.
 
-The recorder refactor reduces upstream patch additions by 46.5% while preserving
-the public API and geometry schema. Its prior comparison of 508 private SVGs at
-220 mm / 0.02 mm with strokes enabled found the same 504 supported results and
-four `native_geometry_error` failures in both builds, with zero output differences.
-Those failures were not counted as passes. Version 0.3.3 addresses the
-canonical-boundary arithmetic and incomplete noding mechanisms, without adding
-printer policy or a fallback; see [the fix and validation scope](docs/support.md#canonical-boundary-fixes).
+## Geometry output
 
-## Geometry contract
-
-- `raw` contains area-bearing paint geometry before paint-order occlusion;
-  `visible` contains the final non-overlapping painted regions; `silhouette`
-  contains their combined footprint.
-- Coordinates use an integer working grid with an explicit conversion factor.
-  Arrays preserve polygon components, holes, colors, and paint provenance.
-- `rgba_f64` is authoritative straight-sRGB RGBA in `[0, 1]`; `rgba` is a
-  compatibility byte representation.
-- Point-only, line-only, empty, and collapsed fragments are reported separately
-  in `unprintable_fragments`. They are not fabricated into printable polygons.
-- Unsupported or invalid documents are rejected as a whole. The standalone
-  package does not retry them through another parser or silently discard
-  unsupported elements.
-- The parser performs no morphological closing, printer-grid snapping,
-  minimum-area filtering, triangulation, or mesh repair.
-
-Independent normalization work can run in parallel. Set
-`LUMINA_SVG_REPLAY_THREADS` to a positive integer to select a worker count; the
-engine caps it at 16. Parallel and serial replay preserve the same ordered
-geometry and provenance.
+- **Three geometry views:** `result.raw` holds area-bearing paint polygons before occlusion, `result.visible` holds the final non-overlapping visible regions, and `result.silhouette` holds their combined outer footprint.
+- **Exact working grid & colors:** Coordinates are stored on an `int64` working grid with explicit scale factors (`grid_to_source_unit` and `scale_factor`). `rgba_f64` provides straight-sRGB colors in `[0.0, 1.0]`, alongside byte-packed `rgba` and contributing paint provenance.
+- **Degenerate fragments:** Zero-area points, open lines, empty paths, and collapsed slivers are reported separately in `result.unprintable_fragments`.
+- **Parallel normalization:** Set `LUMINA_SVG_REPLAY_THREADS` to a positive integer (capped at `16`) to parallelize independent polygon normalization while preserving identical deterministic output order.
 
 ## Development and validation
 
@@ -174,32 +118,15 @@ geometry and provenance.
 python -m pip install ".[test]" build
 python -m pytest tests -q
 python -m build
-python tools/verify_wheel.py dist/<actual-wheel-filename>.whl --contents-only
+python tools/verify_wheel.py dist/<wheel-filename>.whl --contents-only
 ```
 
-CI builds and installs wheels for all three Python versions on all four platform
-targets, runs the complete Python suite, checks binary/license contents, and
-exercises installed extensions. A separate Linux job builds a wheel from the
-source distribution and runs the native canonical-boundary regression.
-See [CONTRIBUTING.md](CONTRIBUTING.md) for
-the development workflow and [benchmarks/README.md](benchmarks/README.md) for
-reproducible measurements.
-
-Performance numbers depend on the input, compiler, CPU, and thread count. The
-checked-in benchmark report describes its reference host; it is not a universal
-latency guarantee.
+CI builds and tests wheels across Python 3.12–3.14 on Windows, macOS (arm64 and x86-64), and Linux, verifies wheel contents and bundled licenses, and tests building from the sdist. See [CONTRIBUTING.md](CONTRIBUTING.md) for contributor guidelines and [benchmarks/README.md](benchmarks/README.md) for benchmark methodology.
 
 ## License and acknowledgements
 
-The project is licensed under the **GNU Affero General Public License, version
-3 only (`AGPL-3.0-only`)**. See [LICENSE](LICENSE) for the full terms.
+Licensed under **AGPL-3.0-only**; see [LICENSE](LICENSE).
 
-The implementation uses pinned LunaSVG/PlutoVG and Clipper2 sources, pybind11
-bindings, and adapted hole-selection criteria from ChromaPrint3D. Their
-licenses and attributions remain separate and are documented in
-[THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) and
-[THIRD_PARTY_LICENSES/](THIRD_PARTY_LICENSES).
+`lumina-svg-core` builds on pinned LunaSVG, PlutoVG, Clipper2, and pybind11 sources, plus adapted hole-selection criteria from ChromaPrint3D. Third-party attributions and license texts are in [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) and [THIRD_PARTY_LICENSES/](THIRD_PARTY_LICENSES).
 
-Report reproducible problems through
-[GitHub Issues](https://github.com/lumina-layer-studio/lumina-svg-core/issues).
-For sensitive reports, follow [SECURITY.md](SECURITY.md).
+Report bugs through [GitHub Issues](https://github.com/lumina-layer-studio/lumina-svg-core/issues), and follow [SECURITY.md](SECURITY.md) for security disclosures.
